@@ -19,6 +19,7 @@ L'outil doit charger et exploiter la base de signatures d'attaques sous format C
 *   **Récupération Réseau :** Par défaut, tenter de télécharger la version la plus récente depuis l'URL officielle :
     `https://raw.githubusercontent.com/DataDog/indicators-of-compromise/refs/heads/keyv-campaign/keyv-campaign/malicious-packages.csv`
 *   **Résolution Locale & Fallback :** En cas d'absence de connexion réseau, utiliser un fichier local passé en argument (`--database <path>`) ou rechercher un fichier `malicious-packages.csv` présent dans le repertoire d'execution.
+*   **Mode Forcé Hors-Ligne (`--offline`) :** Permettre de forcer l'utilisation de la base locale (`--database <path>` ou fichier trouvé dans le répertoire d'exécution) sans jamais tenter le téléchargement réseau, y compris lorsque celui-ci serait disponible. Utile pour les environnements CI/sandbox ou pour garantir l'usage d'une base de signatures figée/spécifique lors des tests.
 *   **Format de Stockage en Mémoire :** Charger les signatures dans une structure de type `HashMap<String, Vec<String>>` où la clé est le nom du paquet NPM et la valeur est un tableau des versions compromises, optimisant ainsi les temps de recherche en $O(1)$.
 
 Format du fichier CSV 
