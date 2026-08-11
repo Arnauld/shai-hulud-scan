@@ -6,30 +6,21 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let json_output = cli.json;
     let report_file = cli.report_file.clone();
+    if cli.no_color {
+        console::set_colors_enabled(false);
+    }
 
     let report = shai_hulud_guard::run(cli).await?;
 
     if json_output {
         println!("{}", report.to_json()?);
     } else {
-        println!("{} dépendance(s) analysée(s).", report.findings.len());
-        for finding in &report.findings {
-            if finding.vulnerable {
-                println!("[VULNÉRABLE] {}@{}", finding.package, finding.version);
-            }
-        }
-        for threat in &report.threats {
-            println!(
-                "[MENACE] {:?} : {} ({})",
-                threat.category,
-                threat.path.display(),
-                threat.detail
-            );
-        }
+        print!("{}", report.render_text());
     }
 
     if let Some(path) = report_file {
-        std::fs::write(path, report.to_json()?)?;
+        let plain_report = console::strip_ansi_codes(&report.render_text()).to_string();
+        std::fs::write(path, plain_report)?;
     }
 
     Ok(())
