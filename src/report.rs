@@ -3,11 +3,13 @@
 use serde::Serialize;
 
 use crate::audit::{Finding, Status};
+use crate::hunt::ThreatSignal;
 
 /// Rapport d'audit sérialisable, indépendant du format de sortie final.
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
     pub findings: Vec<FindingReport>,
+    pub threats: Vec<ThreatSignal>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,7 +33,14 @@ impl Report {
     pub fn from_findings(findings: &[Finding]) -> Self {
         Self {
             findings: findings.iter().map(FindingReport::from).collect(),
+            threats: Vec::new(),
         }
+    }
+
+    /// Attache les signaux de Threat Hunting (SPEC-F06/F07) au rapport.
+    pub fn with_threats(mut self, threats: Vec<ThreatSignal>) -> Self {
+        self.threats = threats;
+        self
     }
 
     /// Sérialise le rapport en JSON structuré (option `--json`, SPEC-T02).

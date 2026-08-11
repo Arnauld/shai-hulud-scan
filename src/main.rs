@@ -18,6 +18,14 @@ async fn main() -> anyhow::Result<()> {
                 println!("[VULNÉRABLE] {}@{}", finding.package, finding.version);
             }
         }
+        for threat in &report.threats {
+            println!(
+                "[MENACE] {:?} : {} ({})",
+                threat.category,
+                threat.path.display(),
+                threat.detail
+            );
+        }
     }
 
     if let Some(path) = report_file {

@@ -19,10 +19,10 @@ use ioc::IocDatabase;
 use report::Report;
 
 /// Orchestre une passe d'audit complète sur `cli.path` et retourne le rapport final :
-/// audit des lockfiles existants (SPEC-F04 niveau 1) puis simulation `npm install`
-/// (SPEC-F04 niveau 2), les processus npm concurrents étant bornés par un sémaphore
-/// dimensionné par `cli.workers` (SPEC-T01). Le Threat Hunting (SPEC-F06/F07) reste
-/// à brancher ici.
+/// audit des lockfiles existants (SPEC-F04 niveau 1), simulation `npm install`
+/// (SPEC-F04 niveau 2, processus concurrents bornés par un sémaphore dimensionné par
+/// `cli.workers`, SPEC-T01) et recherche active de signaux malveillants sur le disque
+/// (SPEC-F06/F07).
 pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     let db = match &cli.database {
         Some(path) => {
@@ -38,6 +38,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         .iter()
         .flat_map(|project| audit::audit_project(&db, project))
         .collect();
+
+    let threats = hunt::hunt(&cli.path, &projects);
 
     let db = Arc::new(db);
     let semaphore = Arc::new(Semaphore::new(cli.workers.max(1)));
@@ -55,5 +57,5 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         }
     }
 
-    Ok(Report::from_findings(&findings))
+    Ok(Report::from_findings(&findings).with_threats(threats))
 }
