@@ -47,21 +47,30 @@ impl IocDatabase {
 
     /// Charge la base IOC (SPEC-F01) : tente d'abord le téléchargement depuis l'URL
     /// officielle, puis se rabat sur `database_path` s'il est fourni, ou sur un
-    /// fichier `malicious-packages.csv` présent dans le répertoire d'exécution.
-    pub async fn load(database_path: Option<&Path>) -> anyhow::Result<Self> {
+    /// fichier `malicious-packages.csv` présent dans le répertoire d'exécution. Si
+    /// `offline` est vrai (`--offline`), le téléchargement n'est jamais tenté et la
+    /// base locale est utilisée directement.
+    pub async fn load(database_path: Option<&Path>, offline: bool) -> anyhow::Result<Self> {
         let cwd = std::env::current_dir()?;
-        Self::load_with(database_path, &cwd, || download_csv(OFFICIAL_IOC_URL)).await
+        Self::load_with(database_path, &cwd, offline, || {
+            download_csv(OFFICIAL_IOC_URL)
+        })
+        .await
     }
 
     async fn load_with<F, Fut>(
         database_path: Option<&Path>,
         fallback_dir: &Path,
+        offline: bool,
         download: F,
     ) -> anyhow::Result<Self>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = anyhow::Result<String>>,
     {
+        if offline {
+            return Self::load_local_fallback(database_path, fallback_dir);
+        }
         match download().await {
             Ok(csv) => Ok(Self::from_csv(&csv)?),
             Err(_) => Self::load_local_fallback(database_path, fallback_dir),
@@ -116,7 +125,7 @@ mod tests {
     async fn uses_downloaded_csv_when_network_succeeds() {
         let empty_dir = tempfile::tempdir().unwrap();
 
-        let db = IocDatabase::load_with(None, empty_dir.path(), || async {
+        let db = IocDatabase::load_with(None, empty_dir.path(), false, || async {
             Ok(SAMPLE_CSV.to_string())
         })
         .await
@@ -132,7 +141,7 @@ mod tests {
         std::fs::write(&local_path, SAMPLE_CSV).unwrap();
         let unrelated_dir = tempfile::tempdir().unwrap();
 
-        let db = IocDatabase::load_with(Some(&local_path), unrelated_dir.path(), || async {
+        let db = IocDatabase::load_with(Some(&local_path), unrelated_dir.path(), false, || async {
             anyhow::bail!("réseau indisponible")
         })
         .await
@@ -146,7 +155,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(LOCAL_FALLBACK_FILENAME), SAMPLE_CSV).unwrap();
 
-        let db = IocDatabase::load_with(None, dir.path(), || async {
+        let db = IocDatabase::load_with(None, dir.path(), false, || async {
             anyhow::bail!("réseau indisponible")
         })
         .await
@@ -159,11 +168,25 @@ mod tests {
     async fn errors_when_network_fails_and_no_local_file_is_found() {
         let empty_dir = tempfile::tempdir().unwrap();
 
-        let result = IocDatabase::load_with(None, empty_dir.path(), || async {
+        let result = IocDatabase::load_with(None, empty_dir.path(), false, || async {
             anyhow::bail!("réseau indisponible")
         })
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn offline_mode_never_attempts_the_download() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LOCAL_FALLBACK_FILENAME), SAMPLE_CSV).unwrap();
+
+        let db = IocDatabase::load_with(None, dir.path(), true, || async {
+            panic!("--offline ne doit jamais déclencher de téléchargement réseau")
+        })
+        .await
+        .unwrap();
+
+        assert!(db.is_compromised("evil-pkg", "1.0.0"));
     }
 }

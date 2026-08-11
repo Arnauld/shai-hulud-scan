@@ -16,6 +16,12 @@ pub struct Cli {
     #[arg(long)]
     pub database: Option<PathBuf>,
 
+    /// Force l'utilisation de la base IOC locale (`--database` ou
+    /// `malicious-packages.csv` dans le répertoire d'exécution) sans jamais tenter
+    /// de téléchargement réseau.
+    #[arg(long)]
+    pub offline: bool,
+
     /// Écrit un rapport texte brut (sans codes ANSI) dans le fichier indiqué.
     #[arg(long)]
     pub report_file: Option<PathBuf>,

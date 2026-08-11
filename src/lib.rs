@@ -24,7 +24,7 @@ use report::Report;
 /// processus concurrents bornés par un sémaphore dimensionné par `cli.workers`,
 /// SPEC-T01) et recherche active de signaux malveillants sur le disque (SPEC-F06/F07).
 pub async fn run(cli: Cli) -> anyhow::Result<Report> {
-    let db = IocDatabase::load(cli.database.as_deref()).await?;
+    let db = IocDatabase::load(cli.database.as_deref(), cli.offline).await?;
 
     let projects = discover(&cli.path);
 
