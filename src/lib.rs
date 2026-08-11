@@ -3,6 +3,7 @@ pub mod cli;
 pub mod discovery;
 pub mod hunt;
 pub mod ioc;
+pub mod lockfile;
 pub mod report;
 pub mod scan;
 pub mod walker;
