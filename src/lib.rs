@@ -19,18 +19,12 @@ use ioc::IocDatabase;
 use report::Report;
 
 /// Orchestre une passe d'audit complète sur `cli.path` et retourne le rapport final :
-/// audit des lockfiles existants (SPEC-F04 niveau 1), simulation `npm install`
-/// (SPEC-F04 niveau 2, processus concurrents bornés par un sémaphore dimensionné par
-/// `cli.workers`, SPEC-T01) et recherche active de signaux malveillants sur le disque
-/// (SPEC-F06/F07).
+/// chargement de la base IOC réseau + fallback local (SPEC-F01), audit des lockfiles
+/// existants (SPEC-F04 niveau 1), simulation `npm install` (SPEC-F04 niveau 2,
+/// processus concurrents bornés par un sémaphore dimensionné par `cli.workers`,
+/// SPEC-T01) et recherche active de signaux malveillants sur le disque (SPEC-F06/F07).
 pub async fn run(cli: Cli) -> anyhow::Result<Report> {
-    let db = match &cli.database {
-        Some(path) => {
-            let csv = std::fs::read_to_string(path)?;
-            IocDatabase::from_csv(&csv)?
-        }
-        None => IocDatabase::default(),
-    };
+    let db = IocDatabase::load(cli.database.as_deref()).await?;
 
     let projects = discover(&cli.path);
 
