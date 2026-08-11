@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use indicatif::ProgressBar;
+
 /// Un projet Node.js détecté par la présence d'un `package.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
@@ -10,9 +12,10 @@ pub struct Project {
     pub has_yarn_lock: bool,
 }
 
-/// Recherche récursivement tous les projets npm/yarn sous `root`.
-pub fn discover(root: &Path) -> Vec<Project> {
-    crate::walker::walk(root)
+/// Recherche récursivement tous les projets npm/yarn sous `root`. `progress` reflète
+/// l'avancement du parcours de fichiers sous-jacent (SPEC-T02).
+pub fn discover(root: &Path, progress: &ProgressBar) -> Vec<Project> {
+    crate::walker::walk(root, progress)
         .filter(|entry| entry.file_name() == "package.json")
         .filter_map(|entry| entry.path().parent().map(Path::to_path_buf))
         .map(|dir| {
@@ -37,7 +40,7 @@ mod tests {
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
         std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
 
-        let projects = discover(dir.path());
+        let projects = discover(dir.path(), &ProgressBar::hidden());
         assert_eq!(projects.len(), 1);
         assert!(projects[0].has_npm_lock);
         assert!(!projects[0].has_yarn_lock);

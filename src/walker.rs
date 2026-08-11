@@ -3,11 +3,17 @@
 use std::path::Path;
 
 use ignore::{DirEntry, WalkBuilder};
+use indicatif::ProgressBar;
 
 /// Parcourt récursivement `root` en respectant les règles `.gitignore` et en
 /// élaguant les dossiers cachés, sans dépendre de commandes système externes.
-pub fn walk(root: &Path) -> impl Iterator<Item = DirEntry> {
-    WalkBuilder::new(root).build().filter_map(Result::ok)
+/// `progress` est incrémentée d'une unité par entrée visitée (SPEC-T02) — passer
+/// `ProgressBar::hidden()` pour un parcours silencieux (ex. en test).
+pub fn walk<'a>(root: &Path, progress: &'a ProgressBar) -> impl Iterator<Item = DirEntry> + 'a {
+    WalkBuilder::new(root)
+        .build()
+        .filter_map(Result::ok)
+        .inspect(move |_| progress.inc(1))
 }
 
 #[cfg(test)]
@@ -19,9 +25,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
 
-        let found = walk(dir.path())
+        let progress = ProgressBar::hidden();
+        let found = walk(dir.path(), &progress)
             .filter(|entry| entry.file_name() == "package.json")
             .count();
         assert_eq!(found, 1);
+        assert_eq!(progress.position(), 2); // le répertoire racine + package.json
     }
 }
