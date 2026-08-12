@@ -1485,6 +1485,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "shai-hulud-guard"
 version = "0.1.1"
 dependencies = [
@@ -1500,6 +1511,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",

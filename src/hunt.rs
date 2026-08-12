@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use crate::discovery::Project;
@@ -17,6 +18,29 @@ pub const SUSPICIOUS_FILENAMES: &[&str] = &[
     "Math_Symbol.js",
     "setup_bun.js",
     "bun_environment.js",
+    // SPEC-F08 (CHAINDROP, compromission keyv) : math_init.js est le même payload que
+    // Math_Symbol.js (même hash SHA-256, nom différent selon le vecteur de propagation).
+    "math_init.js",
+    "bundle.js",
+];
+
+/// Empreintes SHA-256 connues des charges du ver (SPEC-F08, source : Elastic Security
+/// Labs). Le nom de fichier change selon le vecteur de propagation mais le contenu —
+/// donc le hash — reste identique : une correspondance ici est une confirmation
+/// directe, plus fiable qu'une simple correspondance de nom.
+pub const KNOWN_MALICIOUS_FILE_HASHES: &[(&str, &str)] = &[
+    (
+        "9fc2570b7cef51c1b8df116d144d11ff4096357be7d2c4c6367cfc2509cf1bcc",
+        "Math_Symbol.js / math_init.js (CHAINDROP)",
+    ),
+    (
+        "fd3ca4007b225fdf8de7af4345a19179d5efa8c4bb9205f88cda806e5684b1eb",
+        "setup.mjs (CHAINDROP)",
+    ),
+    (
+        "54dc7ea54a1317cca0e890a2770630cf7fa6c97813e0cb9d2caa93012b350668",
+        "setup.mjs, variante (CHAINDROP)",
+    ),
 ];
 
 /// Chaîne recherchée dans les hooks de `<pkg_dir>/node_modules/*/package.json`.
@@ -45,6 +69,9 @@ pub const SUSPICIOUS_CACHE_DIRNAME: &str = ".truffler-cache";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ThreatCategory {
     SuspiciousFile,
+    /// Correspondance de nom **et** d'empreinte SHA-256 avec une charge connue
+    /// (SPEC-F08) : confirmation directe, plus sévère qu'un simple `SuspiciousFile`.
+    ConfirmedMaliciousFile,
     SuspiciousHook,
     ExfilArtifact,
     SuspiciousWorkflow,
@@ -96,8 +123,7 @@ pub fn hunt(workspace_root: &Path, projects: &[Project]) -> Vec<ThreatSignal> {
 }
 
 fn scan_root(root: &Path) -> Vec<ThreatSignal> {
-    let mut signals =
-        scan_root_for_known_files(root, SUSPICIOUS_FILENAMES, ThreatCategory::SuspiciousFile);
+    let mut signals = scan_suspicious_files(root);
     signals.extend(scan_root_for_known_files(
         root,
         EXFIL_ARTIFACT_FILENAMES,
@@ -105,6 +131,47 @@ fn scan_root(root: &Path) -> Vec<ThreatSignal> {
     ));
     signals.extend(scan_cache_dir(root));
     signals
+}
+
+/// Recherche les fichiers de charge utile connus (`SUSPICIOUS_FILENAMES`) et vérifie
+/// leur empreinte SHA-256 contre `KNOWN_MALICIOUS_FILE_HASHES` (SPEC-F08) : une
+/// correspondance de hash est une confirmation directe (`ConfirmedMaliciousFile`),
+/// sinon la correspondance de nom seule reste un indice (`SuspiciousFile`).
+fn scan_suspicious_files(root: &Path) -> Vec<ThreatSignal> {
+    scan_suspicious_files_against(root, KNOWN_MALICIOUS_FILE_HASHES)
+}
+
+fn scan_suspicious_files_against(root: &Path, known_hashes: &[(&str, &str)]) -> Vec<ThreatSignal> {
+    SUSPICIOUS_FILENAMES
+        .iter()
+        .map(|name| root.join(name))
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let matched_hash = sha256_hex(&path)
+                .and_then(|hash| known_hashes.iter().find(|(known, _)| *known == hash));
+            match matched_hash {
+                Some((hash, label)) => ThreatSignal {
+                    category: ThreatCategory::ConfirmedMaliciousFile,
+                    detail: format!("empreinte SHA-256 confirmée ({label}) : {hash}"),
+                    path,
+                },
+                None => ThreatSignal {
+                    category: ThreatCategory::SuspiciousFile,
+                    detail: format!(
+                        "fichier suspect connu par son nom (empreinte non reconnue) : {}",
+                        path.display()
+                    ),
+                    path,
+                },
+            }
+        })
+        .collect()
+}
+
+fn sha256_hex(path: &Path) -> Option<String> {
+    let content = std::fs::read(path).ok()?;
+    let digest = Sha256::digest(&content);
+    Some(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn scan_root_for_known_files(
@@ -254,6 +321,38 @@ mod tests {
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::SuspiciousFile);
         assert!(signals[0].path.ends_with("setup.mjs"));
+    }
+
+    #[test]
+    fn confirms_a_known_malicious_file_via_sha256_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("setup.mjs"), b"malicious payload content").unwrap();
+
+        let hash: String = Sha256::digest(b"malicious payload content")
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let known_hashes = [(hash.as_str(), "charge de test")];
+
+        let signals = scan_suspicious_files_against(dir.path(), &known_hashes);
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].category, ThreatCategory::ConfirmedMaliciousFile);
+        assert!(signals[0].detail.contains("charge de test"));
+    }
+
+    #[test]
+    fn name_match_without_hash_match_stays_a_plain_suspicious_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("setup.mjs"), b"contenu inoffensif").unwrap();
+
+        let known_hashes = [(
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "inconnu",
+        )];
+        let signals = scan_suspicious_files_against(dir.path(), &known_hashes);
+
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].category, ThreatCategory::SuspiciousFile);
     }
 
     #[test]
