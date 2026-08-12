@@ -1,5 +1,7 @@
 //! Audit double-niveau des projets NPM/Yarn : lockfile existant + simulation (SPEC-F04).
 
+use std::path::{Path, PathBuf};
+
 use indicatif::ProgressBar;
 use serde::Deserialize;
 use tracing::debug;
@@ -8,19 +10,28 @@ use crate::discovery::Project;
 use crate::ioc::{CompromiseStatus, IocDatabase};
 use crate::lockfile::{parse_npm_lock, parse_yarn_lock};
 
-/// Une dépendance résolue dans un lockfile, avec son verdict (SPEC-F04, niveau 1).
+/// Une dépendance résolue dans un lockfile, avec son verdict et le projet qui la
+/// référence (SPEC-F04, niveau 1) — nécessaire pour regrouper le récapitulatif des
+/// dépendances problématiques par projet (SPEC-T05).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
+    pub project: PathBuf,
     pub package: String,
     pub version: String,
     pub status: CompromiseStatus,
 }
 
 /// Vérifie une dépendance par rapport à la base IOC (SPEC-F04, niveau 1).
-pub fn check_dependency(db: &IocDatabase, package: &str, version: &str) -> Finding {
+pub fn check_dependency(
+    db: &IocDatabase,
+    project_root: &Path,
+    package: &str,
+    version: &str,
+) -> Finding {
     let status = db.evaluate_compromise(package, version);
     debug!(package, version, status = ?status, "dépendance auditée");
     Finding {
+        project: project_root.to_path_buf(),
         package: package.to_string(),
         version: version.to_string(),
         status,
@@ -38,7 +49,7 @@ pub fn audit_project(db: &IocDatabase, project: &Project) -> Vec<Finding> {
             if let Ok(deps) = parse_npm_lock(&content) {
                 findings.extend(
                     deps.iter()
-                        .map(|dep| check_dependency(db, &dep.name, &dep.version)),
+                        .map(|dep| check_dependency(db, &project.root, &dep.name, &dep.version)),
                 );
             }
         }
@@ -49,7 +60,7 @@ pub fn audit_project(db: &IocDatabase, project: &Project) -> Vec<Finding> {
             let deps = parse_yarn_lock(&content);
             findings.extend(
                 deps.iter()
-                    .map(|dep| check_dependency(db, &dep.name, &dep.version)),
+                    .map(|dep| check_dependency(db, &project.root, &dep.name, &dep.version)),
             );
         }
     }
@@ -78,7 +89,12 @@ pub fn audit_installed_packages(db: &IocDatabase, project: &Project) -> Vec<Find
         .filter_map(|entry| {
             let content = std::fs::read_to_string(entry.path()).ok()?;
             let manifest: InstalledPackageManifest = serde_json::from_str(&content).ok()?;
-            Some(check_dependency(db, &manifest.name?, &manifest.version?))
+            Some(check_dependency(
+                db,
+                &project.root,
+                &manifest.name?,
+                &manifest.version?,
+            ))
         })
         .collect()
 }
@@ -91,7 +107,7 @@ mod tests {
     fn flags_an_exact_version_match_as_corrompue() {
         let db = IocDatabase::from_csv("ecosystem,package,versions\nnpm,evil-pkg,1.0.0\n").unwrap();
         assert!(matches!(
-            check_dependency(&db, "evil-pkg", "1.0.0").status,
+            check_dependency(&db, Path::new("/proj"), "evil-pkg", "1.0.0").status,
             CompromiseStatus::Corrompue { .. }
         ));
     }
@@ -100,7 +116,7 @@ mod tests {
     fn flags_a_known_package_at_a_different_version_as_vulnerable_not_sain() {
         let db = IocDatabase::from_csv("ecosystem,package,versions\nnpm,evil-pkg,1.0.0\n").unwrap();
         assert!(matches!(
-            check_dependency(&db, "evil-pkg", "2.0.0").status,
+            check_dependency(&db, Path::new("/proj"), "evil-pkg", "2.0.0").status,
             CompromiseStatus::Vulnerable { .. }
         ));
     }
@@ -109,9 +125,16 @@ mod tests {
     fn flags_a_fully_unknown_package_as_sain() {
         let db = IocDatabase::from_csv("ecosystem,package,versions\nnpm,evil-pkg,1.0.0\n").unwrap();
         assert_eq!(
-            check_dependency(&db, "unrelated-pkg", "2.0.0").status,
+            check_dependency(&db, Path::new("/proj"), "unrelated-pkg", "2.0.0").status,
             CompromiseStatus::Sain
         );
+    }
+
+    #[test]
+    fn check_dependency_records_the_originating_project() {
+        let db = IocDatabase::default();
+        let finding = check_dependency(&db, Path::new("/projects/demo"), "pkg", "1.0.0");
+        assert_eq!(finding.project, PathBuf::from("/projects/demo"));
     }
 
     #[test]
@@ -140,6 +163,7 @@ mod tests {
 
         let findings = audit_project(&db, &project);
         assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|f| f.project == project.root));
         assert!(findings
             .iter()
             .any(|f| f.package == "evil-pkg"
@@ -178,6 +202,7 @@ mod tests {
 
         let findings = audit_installed_packages(&db, &project);
         assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|f| f.project == project.root));
         assert!(findings
             .iter()
             .any(|f| f.package == "evil-pkg"

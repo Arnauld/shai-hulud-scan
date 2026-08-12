@@ -231,7 +231,7 @@ where
             Ok(content) => parse_npm_lock(&content)
                 .map(|deps| {
                     deps.iter()
-                        .map(|dep| check_dependency(db, &dep.name, &dep.version))
+                        .map(|dep| check_dependency(db, &project.root, &dep.name, &dep.version))
                         .collect()
                 })
                 .unwrap_or_default(),

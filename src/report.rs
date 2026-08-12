@@ -1,6 +1,9 @@
 //! Formats de restitution : console ANSI, fichier rapport, JSON structuré (SPEC-T02),
 //! niveau de verbosité du rapport (SPEC-T05).
 
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
 use console::style;
 use serde::Serialize;
 
@@ -13,7 +16,8 @@ use crate::ioc::CompromiseStatus;
 /// (SPEC-T05). Cumulatif : chaque niveau inclut le contenu des niveaux précédents.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 pub enum ReportLevel {
-    /// Uniquement les dépendances `CORROMPU`/`VULNÉRABLE` et les menaces détectées.
+    /// Uniquement le récapitulatif des dépendances `CORROMPU`/`VULNÉRABLE` et les
+    /// menaces détectées.
     Error,
     /// + le nombre total de dépendances analysées.
     Warn,
@@ -34,6 +38,7 @@ pub struct Report {
 
 #[derive(Debug, Serialize)]
 pub struct FindingReport {
+    pub project: PathBuf,
     pub package: String,
     pub version: String,
     pub status: CompromiseStatus,
@@ -42,10 +47,21 @@ pub struct FindingReport {
 impl From<&Finding> for FindingReport {
     fn from(finding: &Finding) -> Self {
         Self {
+            project: finding.project.clone(),
             package: finding.package.clone(),
             version: finding.version.clone(),
             status: finding.status.clone(),
         }
+    }
+}
+
+/// Rang de sévérité utilisé pour trier le récapitulatif au sein d'un même projet :
+/// `Corrompue` (confirmé) avant `Vulnerable` (à surveiller).
+fn severity_rank(status: &CompromiseStatus) -> u8 {
+    match status {
+        CompromiseStatus::Corrompue { .. } => 0,
+        CompromiseStatus::Vulnerable { .. } => 1,
+        CompromiseStatus::Sain => 2,
     }
 }
 
@@ -73,7 +89,8 @@ impl Report {
 
     /// Sérialise le rapport en JSON structuré (option `--json`, SPEC-T02). Toujours
     /// complet, indépendamment de `--report-level` (SPEC-T05) : destiné à
-    /// l'intégration programmatique, il ne doit jamais perdre d'information.
+    /// l'intégration programmatique, il ne doit jamais perdre d'information. Chaque
+    /// dépendance y porte déjà son projet d'origine (`FindingReport::project`).
     pub fn to_json(&self) -> serde_json::Result<String> {
         serde_json::to_string_pretty(self)
     }
@@ -99,34 +116,61 @@ impl Report {
             ));
         }
 
-        // CORROMPU et VULNÉRABLE sont toujours affichés, quel que soit le niveau :
-        // ce sont les deux verdicts anormaux (SPEC-F04), avec une sévérité distincte.
-        let mut anomaly_count = 0;
-        for finding in &self.findings {
-            match &finding.status {
-                CompromiseStatus::Corrompue { .. } => {
-                    anomaly_count += 1;
-                    out.push_str(&format!(
-                        "{} {}@{}\n",
-                        style("[CORROMPU]").red().bold(),
-                        finding.package,
-                        finding.version
-                    ));
+        // CORROMPU et VULNÉRABLE sont toujours affichés, quel que soit le niveau,
+        // regroupés par projet (SPEC-T05) : ce sont les deux verdicts anormaux
+        // (SPEC-F04), avec une sévérité distincte.
+        let anomalies: Vec<&FindingReport> = self
+            .findings
+            .iter()
+            .filter(|f| f.status != CompromiseStatus::Sain)
+            .collect();
+
+        if !anomalies.is_empty() {
+            let mut by_project: BTreeMap<&Path, Vec<&FindingReport>> = BTreeMap::new();
+            for finding in &anomalies {
+                by_project
+                    .entry(finding.project.as_path())
+                    .or_default()
+                    .push(finding);
+            }
+
+            out.push_str(&format!(
+                "\n{}\n",
+                style("Récapitulatif des dépendances problématiques par projet :").bold()
+            ));
+            for (project, mut findings) in by_project {
+                findings.sort_by(|a, b| {
+                    severity_rank(&a.status)
+                        .cmp(&severity_rank(&b.status))
+                        .then_with(|| a.package.cmp(&b.package))
+                });
+
+                out.push_str(&format!("\n{}\n", style(project.display()).bold()));
+                for finding in findings {
+                    match &finding.status {
+                        CompromiseStatus::Corrompue { .. } => {
+                            out.push_str(&format!(
+                                "  {} {}@{}\n",
+                                style("[CORROMPU]").red().bold(),
+                                finding.package,
+                                finding.version
+                            ));
+                        }
+                        CompromiseStatus::Vulnerable {
+                            known_compromised_versions,
+                            ..
+                        } => {
+                            out.push_str(&format!(
+                                "  {} {}@{} (versions compromises connues : {})\n",
+                                style("[VULNÉRABLE]").yellow().bold(),
+                                finding.package,
+                                finding.version,
+                                known_compromised_versions.join(", ")
+                            ));
+                        }
+                        CompromiseStatus::Sain => unreachable!("filtré ci-dessus"),
+                    }
                 }
-                CompromiseStatus::Vulnerable {
-                    known_compromised_versions,
-                    ..
-                } => {
-                    anomaly_count += 1;
-                    out.push_str(&format!(
-                        "{} {}@{} (versions compromises connues : {})\n",
-                        style("[VULNÉRABLE]").yellow().bold(),
-                        finding.package,
-                        finding.version,
-                        known_compromised_versions.join(", ")
-                    ));
-                }
-                CompromiseStatus::Sain => {}
             }
         }
 
@@ -153,7 +197,7 @@ impl Report {
             }
         }
 
-        if anomaly_count == 0 && self.threats.is_empty() {
+        if anomalies.is_empty() && self.threats.is_empty() {
             out.push_str(&format!(
                 "{}\n",
                 style("Aucune compromission détectée.").green()
@@ -184,26 +228,28 @@ mod tests {
         }
     }
 
+    fn finding(project: &str, package: &str, version: &str, status: CompromiseStatus) -> Finding {
+        Finding {
+            project: PathBuf::from(project),
+            package: package.to_string(),
+            version: version.to_string(),
+            status,
+        }
+    }
+
     #[test]
     fn serializes_findings_to_json() {
-        let findings = vec![Finding {
-            package: "evil-pkg".to_string(),
-            version: "1.0.0".to_string(),
-            status: corrompue("1.0.0"),
-        }];
+        let findings = vec![finding("/proj", "evil-pkg", "1.0.0", corrompue("1.0.0"))];
         let report = Report::from_findings(&findings);
         let json = report.to_json().unwrap();
         assert!(json.contains("\"Corrompue\""));
         assert!(json.contains("\"1.0.0\""));
+        assert!(json.contains("\"project\""));
     }
 
     #[test]
     fn renders_readable_text_report() {
-        let findings = vec![Finding {
-            package: "evil-pkg".to_string(),
-            version: "1.0.0".to_string(),
-            status: corrompue("1.0.0"),
-        }];
+        let findings = vec![finding("/proj", "evil-pkg", "1.0.0", corrompue("1.0.0"))];
         let threats = vec![crate::hunt::ThreatSignal {
             category: crate::hunt::ThreatCategory::SuspiciousFile,
             path: std::path::PathBuf::from("/tmp/setup.mjs"),
@@ -219,11 +265,12 @@ mod tests {
 
     #[test]
     fn renders_vulnerable_findings_with_known_compromised_versions() {
-        let findings = vec![Finding {
-            package: "evil-pkg".to_string(),
-            version: "2.0.0".to_string(),
-            status: vulnerable("2.0.0", &["1.0.0", "1.1.0"]),
-        }];
+        let findings = vec![finding(
+            "/proj",
+            "evil-pkg",
+            "2.0.0",
+            vulnerable("2.0.0", &["1.0.0", "1.1.0"]),
+        )];
         let report = Report::from_findings(&findings);
         let text = report.render_text(ReportLevel::Error);
 
@@ -233,14 +280,39 @@ mod tests {
     }
 
     #[test]
+    fn groups_the_recap_by_project_in_sorted_order() {
+        let findings = vec![
+            finding("/projects/b-proj", "evil-pkg", "1.0.0", corrompue("1.0.0")),
+            finding(
+                "/projects/a-proj",
+                "other-pkg",
+                "2.0.0",
+                vulnerable("2.0.0", &["1.0.0"]),
+            ),
+            finding("/projects/a-proj", "evil-pkg", "1.0.0", corrompue("1.0.0")),
+        ];
+        let report = Report::from_findings(&findings);
+        let text = report.render_text(ReportLevel::Error);
+
+        let a_proj_pos = text.find("/projects/a-proj").unwrap();
+        let b_proj_pos = text.find("/projects/b-proj").unwrap();
+        assert!(
+            a_proj_pos < b_proj_pos,
+            "les projets doivent être triés par chemin : {text}"
+        );
+
+        // Au sein de /projects/a-proj : Corrompue (evil-pkg) avant Vulnerable (other-pkg).
+        let evil_pos = text.find("evil-pkg@1.0.0").unwrap();
+        let other_pos = text.find("other-pkg@2.0.0").unwrap();
+        assert!(evil_pos < other_pos);
+        assert!(evil_pos > a_proj_pos && evil_pos < b_proj_pos);
+    }
+
+    #[test]
     fn stripping_ansi_codes_yields_the_same_plain_content() {
         console::set_colors_enabled(true);
 
-        let findings = vec![Finding {
-            package: "evil-pkg".to_string(),
-            version: "1.0.0".to_string(),
-            status: corrompue("1.0.0"),
-        }];
+        let findings = vec![finding("/proj", "evil-pkg", "1.0.0", corrompue("1.0.0"))];
         let report = Report::from_findings(&findings);
         let colored = report.render_text(ReportLevel::Debug);
         let plain = console::strip_ansi_codes(&colored).to_string();
@@ -253,16 +325,8 @@ mod tests {
     #[test]
     fn report_level_controls_how_much_detail_is_shown() {
         let findings = vec![
-            Finding {
-                package: "evil-pkg".to_string(),
-                version: "1.0.0".to_string(),
-                status: corrompue("1.0.0"),
-            },
-            Finding {
-                package: "safe-pkg".to_string(),
-                version: "2.0.0".to_string(),
-                status: CompromiseStatus::Sain,
-            },
+            finding("/proj", "evil-pkg", "1.0.0", corrompue("1.0.0")),
+            finding("/proj", "safe-pkg", "2.0.0", CompromiseStatus::Sain),
         ];
         let report = Report::from_findings(&findings).with_project_count(3);
 
