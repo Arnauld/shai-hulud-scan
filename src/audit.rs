@@ -2,6 +2,7 @@
 
 use indicatif::ProgressBar;
 use serde::Deserialize;
+use tracing::debug;
 
 use crate::discovery::Project;
 use crate::ioc::IocDatabase;
@@ -29,6 +30,7 @@ pub fn check_dependency(db: &IocDatabase, package: &str, version: &str) -> Findi
     } else {
         Status::Sain
     };
+    debug!(package, version, status = ?status, "dépendance auditée");
     Finding {
         package: package.to_string(),
         version: version.to_string(),

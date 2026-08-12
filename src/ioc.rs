@@ -6,6 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
+use tracing::{error, info, warn};
 
 /// URL officielle de la base d'IOC Datadog (paquets npm malveillants connus).
 pub const OFFICIAL_IOC_URL: &str = "https://raw.githubusercontent.com/DataDog/indicators-of-compromise/refs/heads/keyv-campaign/keyv-campaign/malicious-packages.csv";
@@ -69,11 +70,18 @@ impl IocDatabase {
         Fut: Future<Output = anyhow::Result<String>>,
     {
         if offline {
+            info!("mode --offline actif, base IOC locale utilisée sans tentative réseau");
             return Self::load_local_fallback(database_path, fallback_dir);
         }
         match download().await {
-            Ok(csv) => Ok(Self::from_csv(&csv)?),
-            Err(_) => Self::load_local_fallback(database_path, fallback_dir),
+            Ok(csv) => {
+                info!("base IOC téléchargée depuis la source réseau officielle");
+                Ok(Self::from_csv(&csv)?)
+            }
+            Err(err) => {
+                warn!(error = %err, "téléchargement réseau de la base IOC échoué, repli sur la base locale");
+                Self::load_local_fallback(database_path, fallback_dir)
+            }
         }
     }
 
@@ -85,12 +93,15 @@ impl IocDatabase {
             Some(path) => path.to_path_buf(),
             None => fallback_dir.join(LOCAL_FALLBACK_FILENAME),
         };
-        let csv = std::fs::read_to_string(&path).with_context(|| {
-            format!(
-                "téléchargement réseau de la base IOC échoué et aucun fichier local trouvé ({})",
-                path.display()
-            )
-        })?;
+        let csv = std::fs::read_to_string(&path)
+            .inspect_err(|_| error!(path = %path.display(), "aucune base IOC locale disponible"))
+            .with_context(|| {
+                format!(
+                    "téléchargement réseau de la base IOC échoué et aucun fichier local trouvé ({})",
+                    path.display()
+                )
+            })?;
+        info!(path = %path.display(), "base IOC chargée depuis un fichier local");
         Ok(Self::from_csv(&csv)?)
     }
 }

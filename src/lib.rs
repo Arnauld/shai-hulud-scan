@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Semaphore;
+use tracing::info;
 
 use cli::Cli;
 use discovery::discover;
@@ -64,6 +65,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     }
     simulation_progress.finish_and_clear();
 
+    info!(
+        findings = findings.len(),
+        threats = threats.len(),
+        "rapport généré"
+    );
     Ok(Report::from_findings(&findings).with_threats(threats))
 }
 

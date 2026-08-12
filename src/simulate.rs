@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use tokio::process::Command;
 use tokio::sync::Semaphore;
+use tracing::warn;
 
 use crate::audit::{check_dependency, Finding};
 use crate::discovery::Project;
@@ -68,6 +69,14 @@ where
     let permit = semaphore.acquire().await?;
     let outcome = command(project.root.clone()).await;
     drop(permit);
+
+    if let Err(ref err) = outcome {
+        warn!(
+            project = %project.root.display(),
+            error = %err,
+            "simulation npm install échouée"
+        );
+    }
 
     let findings = if outcome.is_ok() {
         match tokio::fs::read_to_string(&lock_path).await {

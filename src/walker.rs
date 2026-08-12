@@ -8,12 +8,16 @@ use indicatif::ProgressBar;
 /// Parcourt récursivement `root` en respectant les règles `.gitignore` et en
 /// élaguant les dossiers cachés, sans dépendre de commandes système externes.
 /// `progress` est incrémentée d'une unité par entrée visitée (SPEC-T02) — passer
-/// `ProgressBar::hidden()` pour un parcours silencieux (ex. en test).
+/// `ProgressBar::hidden()` pour un parcours silencieux (ex. en test). Chaque entrée
+/// est journalisée au niveau `DEBUG` (visible uniquement via `--verbose`, SPEC-T04).
 pub fn walk<'a>(root: &Path, progress: &'a ProgressBar) -> impl Iterator<Item = DirEntry> + 'a {
     WalkBuilder::new(root)
         .build()
         .filter_map(Result::ok)
-        .inspect(move |_| progress.inc(1))
+        .inspect(move |entry| {
+            progress.inc(1);
+            tracing::debug!(path = %entry.path().display(), "fichier analysé");
+        })
 }
 
 #[cfg(test)]

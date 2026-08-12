@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use indicatif::ProgressBar;
+use tracing::info;
 
 /// Un projet Node.js détecté par la présence d'un `package.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +19,7 @@ pub struct Project {
 /// pas des racines de projet — ils sont vérifiés directement par leur nom/version
 /// déclarés (`audit::audit_installed_packages`), sans lockfile ni simulation.
 pub fn discover(root: &Path, progress: &ProgressBar) -> Vec<Project> {
-    crate::walker::walk(root, progress)
+    let projects: Vec<Project> = crate::walker::walk(root, progress)
         .filter(|entry| entry.file_name() == "package.json")
         .filter(|entry| {
             !entry
@@ -36,7 +37,18 @@ pub fn discover(root: &Path, progress: &ProgressBar) -> Vec<Project> {
                 has_yarn_lock,
             }
         })
-        .collect()
+        .collect();
+
+    for project in &projects {
+        info!(
+            project = %project.root.display(),
+            npm_lock = project.has_npm_lock,
+            yarn_lock = project.has_yarn_lock,
+            "projet npm/yarn découvert"
+        );
+    }
+
+    projects
 }
 
 #[cfg(test)]

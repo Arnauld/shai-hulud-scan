@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use tracing::debug;
 
 use crate::discovery::Project;
 
@@ -82,6 +83,15 @@ pub fn hunt(workspace_root: &Path, projects: &[Project]) -> Vec<ThreatSignal> {
 
     signals.sort_by(|a, b| a.path.cmp(&b.path));
     signals.dedup();
+
+    for signal in &signals {
+        debug!(
+            category = ?signal.category,
+            path = %signal.path.display(),
+            "signal de Threat Hunting détecté"
+        );
+    }
+
     signals
 }
 

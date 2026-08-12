@@ -1,4 +1,4 @@
-//! Interface en ligne de commande (SPEC-T01/T02).
+//! Interface en ligne de commande (SPEC-T01/T02/T04).
 
 use std::path::PathBuf;
 
@@ -37,4 +37,10 @@ pub struct Cli {
     /// Nombre maximal de simulations `npm install` concurrentes (sémaphore, SPEC-T01).
     #[arg(long, default_value_t = 4)]
     pub workers: usize,
+
+    /// Active le niveau de log DEBUG et journalise chaque fichier analysé pendant
+    /// le parcours (SPEC-T04). Les logs sont toujours émis sur stderr. `RUST_LOG`
+    /// prime sur ce flag si défini.
+    #[arg(short, long)]
+    pub verbose: bool,
 }
