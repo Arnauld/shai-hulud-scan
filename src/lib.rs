@@ -73,6 +73,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     let (passive_scan_signals, install_command_mentions) = scan::scan_workspace(&cli.path);
     threats.extend(passive_scan_signals);
     threats.extend(projects.iter().flat_map(registry::scan_project));
+    threats.extend(projects.iter().flat_map(audit::audit_lockfile_drift));
 
     let project_count = projects.len();
     let db = Arc::new(db);

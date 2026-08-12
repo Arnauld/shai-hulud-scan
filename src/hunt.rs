@@ -105,6 +105,10 @@ pub enum ThreatCategory {
     /// Jeton/secret en clair détecté dans `~/.npmrc` ou un fichier `.env*` du
     /// workspace (SPEC-F08).
     ExposedSecret,
+    /// Version installée dans `node_modules` différente de celle déclarée dans le
+    /// lockfile (SPEC-F08) : `node_modules` désynchronisé, ou paquet substitué en
+    /// dehors du contrôle du lockfile.
+    LockfileDrift,
 }
 
 /// Un signal de compromission détecté sur le disque.

@@ -1,5 +1,6 @@
 //! Audit double-niveau des projets NPM/Yarn : lockfile existant + simulation (SPEC-F04).
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use indicatif::ProgressBar;
@@ -7,8 +8,9 @@ use serde::Deserialize;
 use tracing::debug;
 
 use crate::discovery::Project;
+use crate::hunt::{ThreatCategory, ThreatSignal};
 use crate::ioc::{CompromiseStatus, IocDatabase};
-use crate::lockfile::{parse_npm_lock, parse_yarn_lock};
+use crate::lockfile::{parse_npm_lock, parse_yarn_lock, LockedDependency};
 
 /// Une dépendance résolue dans un lockfile, avec son verdict et le projet qui la
 /// référence (SPEC-F04, niveau 1) — nécessaire pour regrouper le récapitulatif des
@@ -101,6 +103,115 @@ pub fn audit_installed_packages(db: &IocDatabase, project: &Project) -> Vec<Find
                 &manifest.name?,
                 &manifest.version?,
             ))
+        })
+        .collect()
+}
+
+/// Verrouille une version par nom de paquet à partir des lockfiles existants du
+/// projet (SPEC-F04, niveau 1) — nécessaire pour la détection de divergence
+/// lockfile / installé (SPEC-F08). Un nom référencé à plusieurs versions distinctes
+/// dans le(s) lockfile(s) (résolution multi-version légitime d'un paquet transitif
+/// non hissé) est volontairement exclu : impossible de savoir sans profondeur de
+/// l'arbre à quelle copie installée le comparer, mieux vaut ne rien signaler que de
+/// produire un faux positif.
+fn locked_versions(project: &Project) -> HashMap<String, String> {
+    let mut versions: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut record = |dep: LockedDependency| {
+        versions.entry(dep.name).or_default().insert(dep.version);
+    };
+
+    if project.has_npm_lock {
+        if let Ok(content) = std::fs::read_to_string(project.root.join("package-lock.json")) {
+            if let Ok(deps) = parse_npm_lock(&content) {
+                deps.into_iter().for_each(&mut record);
+            }
+        }
+    }
+
+    if project.has_yarn_lock {
+        if let Ok(content) = std::fs::read_to_string(project.root.join("yarn.lock")) {
+            parse_yarn_lock(&content).into_iter().for_each(&mut record);
+        }
+    }
+
+    versions
+        .into_iter()
+        .filter_map(|(name, distinct_versions)| {
+            (distinct_versions.len() == 1)
+                .then(|| (name, distinct_versions.into_iter().next().unwrap()))
+        })
+        .collect()
+}
+
+/// Chemins des `package.json` des paquets installés au premier niveau de
+/// `node_modules` (paquets hissés, gère l'espace de noms `@scope/`) — volontairement
+/// **pas** récursif dans les `node_modules` imbriqués, à la différence de
+/// [`audit_installed_packages`] : une version différente en profondeur reflète une
+/// résolution multi-version normale de npm/yarn, pas une divergence à signaler.
+fn top_level_package_json_paths(node_modules: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let Ok(entries) = std::fs::read_dir(node_modules) else {
+        return paths;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        if entry.file_name().to_string_lossy().starts_with('@') {
+            let Ok(scoped_entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            paths.extend(
+                scoped_entries
+                    .flatten()
+                    .map(|scoped| scoped.path().join("package.json"))
+                    .filter(|manifest| manifest.is_file()),
+            );
+            continue;
+        }
+
+        let manifest = path.join("package.json");
+        if manifest.is_file() {
+            paths.push(manifest);
+        }
+    }
+
+    paths
+}
+
+/// Compare les versions déclarées dans le(s) lockfile(s) existant(s) avec celles
+/// réellement présentes dans `node_modules` (SPEC-F08) : une divergence peut trahir
+/// un `node_modules` désynchronisé du lockfile, ou un paquet substitué en dehors du
+/// contrôle de ce dernier (contournement du verrouillage de version).
+pub fn audit_lockfile_drift(project: &Project) -> Vec<ThreatSignal> {
+    let locked = locked_versions(project);
+    if locked.is_empty() {
+        return Vec::new();
+    }
+
+    let node_modules = project.root.join("node_modules");
+    if !node_modules.is_dir() {
+        return Vec::new();
+    }
+
+    top_level_package_json_paths(&node_modules)
+        .into_iter()
+        .filter_map(|manifest_path| {
+            let content = std::fs::read_to_string(&manifest_path).ok()?;
+            let manifest: InstalledPackageManifest = serde_json::from_str(&content).ok()?;
+            let name = manifest.name?;
+            let installed_version = manifest.version?;
+            let locked_version = locked.get(&name)?;
+            (locked_version != &installed_version).then(|| ThreatSignal {
+                category: ThreatCategory::LockfileDrift,
+                detail: format!(
+                    "{name}@{installed_version} installé, mais le lockfile référence {name}@{locked_version}"
+                ),
+                path: manifest_path,
+            })
         })
         .collect()
 }
@@ -249,5 +360,162 @@ mod tests {
             .iter()
             .any(|f| f.package == "evil-pkg"
                 && matches!(f.status, CompromiseStatus::Corrompue { .. })));
+    }
+
+    #[test]
+    fn flags_a_package_installed_at_a_different_version_than_the_lockfile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package-lock.json"),
+            r#"{
+                "lockfileVersion": 3,
+                "packages": {
+                    "": { "name": "demo" },
+                    "node_modules/lodash": { "version": "4.17.21" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let installed_dir = dir.path().join("node_modules").join("lodash");
+        std::fs::create_dir_all(&installed_dir).unwrap();
+        std::fs::write(
+            installed_dir.join("package.json"),
+            r#"{"name":"lodash","version":"4.17.20"}"#,
+        )
+        .unwrap();
+
+        let project = Project {
+            root: dir.path().to_path_buf(),
+            has_npm_lock: true,
+            has_yarn_lock: false,
+        };
+
+        let signals = audit_lockfile_drift(&project);
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].category, ThreatCategory::LockfileDrift);
+        assert!(signals[0].detail.contains("4.17.20"));
+        assert!(signals[0].detail.contains("4.17.21"));
+    }
+
+    #[test]
+    fn no_drift_signal_when_installed_version_matches_the_lockfile() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package-lock.json"),
+            r#"{
+                "lockfileVersion": 3,
+                "packages": {
+                    "": { "name": "demo" },
+                    "node_modules/lodash": { "version": "4.17.21" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let installed_dir = dir.path().join("node_modules").join("lodash");
+        std::fs::create_dir_all(&installed_dir).unwrap();
+        std::fs::write(
+            installed_dir.join("package.json"),
+            r#"{"name":"lodash","version":"4.17.21"}"#,
+        )
+        .unwrap();
+
+        let project = Project {
+            root: dir.path().to_path_buf(),
+            has_npm_lock: true,
+            has_yarn_lock: false,
+        };
+
+        assert!(audit_lockfile_drift(&project).is_empty());
+    }
+
+    #[test]
+    fn ignores_a_package_name_locked_at_multiple_distinct_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package-lock.json"),
+            r#"{
+                "lockfileVersion": 3,
+                "packages": {
+                    "": { "name": "demo" },
+                    "node_modules/lodash": { "version": "4.17.21" },
+                    "node_modules/foo/node_modules/lodash": { "version": "3.10.1" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let installed_dir = dir.path().join("node_modules").join("lodash");
+        std::fs::create_dir_all(&installed_dir).unwrap();
+        std::fs::write(
+            installed_dir.join("package.json"),
+            r#"{"name":"lodash","version":"9.9.9"}"#,
+        )
+        .unwrap();
+
+        let project = Project {
+            root: dir.path().to_path_buf(),
+            has_npm_lock: true,
+            has_yarn_lock: false,
+        };
+
+        // Ambigu (deux versions verrouillées pour le même nom) : on ne peut pas
+        // savoir laquelle comparer à la copie hissée, donc aucun signal.
+        assert!(audit_lockfile_drift(&project).is_empty());
+    }
+
+    #[test]
+    fn detects_drift_for_a_scoped_package() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package-lock.json"),
+            r#"{
+                "lockfileVersion": 3,
+                "packages": {
+                    "": { "name": "demo" },
+                    "node_modules/@scope/pkg": { "version": "1.0.0" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let installed_dir = dir.path().join("node_modules").join("@scope").join("pkg");
+        std::fs::create_dir_all(&installed_dir).unwrap();
+        std::fs::write(
+            installed_dir.join("package.json"),
+            r#"{"name":"@scope/pkg","version":"2.0.0"}"#,
+        )
+        .unwrap();
+
+        let project = Project {
+            root: dir.path().to_path_buf(),
+            has_npm_lock: true,
+            has_yarn_lock: false,
+        };
+
+        let signals = audit_lockfile_drift(&project);
+        assert_eq!(signals.len(), 1);
+        assert!(signals[0].detail.contains("@scope/pkg"));
+    }
+
+    #[test]
+    fn no_signal_when_no_lockfile_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed_dir = dir.path().join("node_modules").join("lodash");
+        std::fs::create_dir_all(&installed_dir).unwrap();
+        std::fs::write(
+            installed_dir.join("package.json"),
+            r#"{"name":"lodash","version":"4.17.21"}"#,
+        )
+        .unwrap();
+
+        let project = Project {
+            root: dir.path().to_path_buf(),
+            has_npm_lock: false,
+            has_yarn_lock: false,
+        };
+
+        assert!(audit_lockfile_drift(&project).is_empty());
     }
 }
