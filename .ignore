@@ -1,0 +1,10 @@
+# Fichier spécifique à la crate `ignore` (moteur de parcours de shai-hulud-guard,
+# SPEC-F02) : n'affecte PAS le suivi git, contrairement à .gitignore.
+#
+# test-data/ contient des fixtures de test (package.json/package-lock.json/yarn.lock
+# réels) — ce ne sont pas de vrais projets à auditer. Sans cette exclusion, lancer
+# shai-hulud-guard sur ce dépôt (ou un répertoire parent) traite ces fixtures comme
+# des projets et déclenche de vraies simulations `npm install` dessus, ce qui peut
+# muter les fixtures (npm réécrit un yarn.lock existant en effet de bord) ou bloquer
+# le scan (résolution réseau lente/bloquée sur un des paquets réels référencés).
+/test-data/

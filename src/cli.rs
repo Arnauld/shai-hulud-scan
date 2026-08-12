@@ -40,6 +40,12 @@ pub struct Cli {
     #[arg(long, default_value_t = 4)]
     pub workers: usize,
 
+    /// Délai maximal (secondes) accordé à chaque simulation `npm install` avant
+    /// abandon (SPEC-F04). Une résolution réseau lente ou bloquée sur un seul projet
+    /// ne doit jamais empêcher le reste du scan de se terminer.
+    #[arg(long, default_value_t = 120)]
+    pub npm_timeout: u64,
+
     /// Active le niveau de log DEBUG et journalise chaque fichier analysé pendant
     /// le parcours (SPEC-T04). Les logs sont toujours émis sur stderr. `RUST_LOG`
     /// prime sur ce flag si défini.

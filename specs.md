@@ -68,16 +68,35 @@ Pour chaque dossier de projet Node.js identifié :
     *   *Yarn (Lockfile format) :* Écrire un décodeur linéaire efficace en Rust pour parser la syntaxe du `yarn.lock` (Classic v1 et Berry v2+) afin d'extraire les paquets et leurs versions résolues.
     *   Vérifier chaque dépendance par rapport à la base d'IOC et classifier : `VULNÉRABLE` (si version compromise détectée) ou `SAIN`.
 *   **Niveau 2 : Évaluation potentielle (Simulation) :**
-    *   Sauvegarder temporairement le fichier de lock d'origine en `.orig`.
+    *   Sauvegarder temporairement **tout fichier de lock d'origine présent** (`package-lock.json`
+        **et** `yarn.lock` s'ils existent) en `.orig` avant de lancer npm — constaté en pratique :
+        `npm install`, même en `--package-lock-only`, peut réécrire un `yarn.lock` déjà présent en
+        effet de bord, pas seulement générer/modifier `package-lock.json`. Ne protéger que
+        `package-lock.json` est insuffisant et peut corrompre silencieusement un dépôt scanné.
     *   Lancer la commande de simulation NPM de manière isolée et sécurisée :
         ```bash
         npm install --package-lock-only --include=dev --ignore-scripts --audit=false --fund=false --legacy-peer-deps --no-workspaces
         ```
         *   **Flag Critique `--legacy-peer-deps` :** Indispensable pour contourner les erreurs de résolution de pairs (ERESOLVE) fréquentes sur les anciens dépôts, évitant ainsi un blocage de génération.
         *   **Flag Critique `--no-workspaces` :** Indispensable pour forcer `npm` à écrire le fichier de verrouillage localement dans le répertoire du projet ciblé, évitant la redirection automatique vers la racine des monorepos de workspaces.
+    *   **Délai maximal (`--npm-timeout`, défaut 120s) :** La commande npm doit être bornée par un
+        timeout. Sans cela, un seul projet dont la résolution réseau est lente, bloquée (registre
+        privé, proxy, authentification manquante) ou qui boucle indéfiniment **bloque la totalité
+        du scan** — y compris l'écriture du rapport final (`--report-file`/`--json`/console), qui
+        n'a lieu qu'une fois toutes les simulations terminées. En cas de dépassement, abandonner ce
+        projet (avertissement), restaurer son état d'origine, et poursuivre le scan des autres
+        projets.
     *   Analyser le fichier de verrouillage potentiel nouvellement généré.
-    *   Restaurer proprement l'état d'origine du répertoire (supprimer le lock temporaire ou restaurer le fichier `.orig`).
+    *   Restaurer proprement l'état d'origine du répertoire pour **chaque** fichier sauvegardé
+        (supprimer le lock temporaire ou restaurer le fichier `.orig`), y compris en cas d'échec ou
+        de timeout.
     *   Enregistrer toutes les détections en mémoire de manière groupée.
+
+> ⚠️ **Le workspace de développement de l'outil lui-même (`test-data/`, fixtures de test) ne doit
+> jamais être traité comme un ensemble de projets à auditer** lorsque l'outil est lancé sur son
+> propre dépôt ou un répertoire parent : cela déclencherait de vraies simulations `npm install`
+> sur des fixtures statiques, avec les deux risques ci-dessus (mutation de fixture, blocage du
+> scan). À exclure du moteur de parcours (SPEC-F02), indépendamment de tout suivi git.
 
 ### SPEC-F05 - Détection passive dans le code source (NPM et Yarn)
 L'outil doit scanner le code source de tous les fichiers du dépôt (hors fichiers exclus comme `.js`, `.json`, `.css`, images, binaires, etc.) à la recherche d'occurrences d'instructions d'installation directes.
