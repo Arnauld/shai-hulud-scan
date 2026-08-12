@@ -7,6 +7,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let json_output = cli.json;
     let report_file = cli.report_file.clone();
+    let report_level = cli.report_level;
     if cli.no_color {
         console::set_colors_enabled(false);
     }
@@ -17,11 +18,11 @@ async fn main() -> anyhow::Result<()> {
     if json_output {
         println!("{}", report.to_json()?);
     } else {
-        print!("{}", report.render_text());
+        print!("{}", report.render_text(report_level));
     }
 
     if let Some(path) = report_file {
-        let plain_report = console::strip_ansi_codes(&report.render_text()).to_string();
+        let plain_report = console::strip_ansi_codes(&report.render_text(report_level)).to_string();
         std::fs::write(path, plain_report)?;
     }
 

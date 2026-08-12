@@ -1,8 +1,10 @@
-//! Interface en ligne de commande (SPEC-T01/T02/T04).
+//! Interface en ligne de commande (SPEC-T01/T02/T04/T05).
 
 use std::path::PathBuf;
 
 use clap::Parser;
+
+use crate::report::ReportLevel;
 
 /// shai-hulud-guard : audit de sécurité des dépôts npm/yarn contre la compromission Shai-Hulud.
 #[derive(Debug, Parser)]
@@ -43,4 +45,11 @@ pub struct Cli {
     /// prime sur ce flag si défini.
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Niveau de détail du rapport (console / `--report-file`), indépendant de
+    /// `--verbose` : réutilise l'échelle `error < warn < info < debug` (SPEC-T05).
+    /// Par défaut `debug` (verbose) : liste aussi les dépendances saines, pas
+    /// seulement les vulnérables.
+    #[arg(long, value_enum, default_value = "debug")]
+    pub report_level: ReportLevel,
 }
