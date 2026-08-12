@@ -50,6 +50,11 @@ voir https://github.com/BurntSushi/ripgrep/blob/master/Cargo.toml
 
 ### SPEC-F03 - Découverte hybride des projets (NPM et Yarn)
 L'outil doit identifier de manière autonome les racines des projets JavaScript/Node.js :
+*   **Répertoire de départ :** Le parcours récursif démarre à la racine passée en argument
+    positionnel `[PATH]` (ex. `shai-hulud-guard /chemin/vers/workspace`). Ce répertoire sert
+    à la fois de racine pour la découverte des projets (SPEC-F02/F03) et pour le Threat Hunting
+    au niveau workspace (SPEC-F06/F07). Par défaut, en son absence, `PATH` vaut le répertoire
+    courant d'exécution (`.`).
 *   Rechercher récursivement tous les dossiers contenant un fichier `package.json`.
 *   Détecter la présence concomitante de fichiers de verrouillage : `package-lock.json` (NPM) et `yarn.lock` (Yarn Classic ou Berry).
 *   Générer un inventaire des projets trouvés sous forme de flux (Stream) envoyé au pool de travailleurs (Worker Pool).
