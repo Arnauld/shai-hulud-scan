@@ -159,6 +159,54 @@ Une seconde vague de la campagne (identifiée fin novembre 2025, alias `Sha1-Hul
 
 > ⚠️ Ces IOC évoluent rapidement (nouvelles variantes régulièrement publiées par Datadog, JFrog, Wiz, Aikido, Socket.dev). L'outil doit permettre une mise à jour de la liste de fichiers/chaînes suspects sans recompilation (ex. fichier de configuration `iocs.toml` externe), plutôt que de figer ces valeurs en dur dans le binaire.
 
+### SPEC-F08 - Détection étendue "CHAINDROP" (compromission `keyv` et paquets liés, source :
+[Elastic Security Labs](https://www.elastic.co/security-labs/shai-hulud-chaindrop-npm-supply-chain))
+Une troisième vague documentée par Elastic (mainteneur `keyv` compromis — `keyv`, `flat-cache`,
+`cacheable-request`, `cacheable`, `cache-manager`, 400+ paquets au total, 1,3 milliard de
+téléchargements mensuels cumulés) introduit de nouveaux vecteurs à couvrir, en complément de
+SPEC-F06/F07 :
+
+1.  **Empreintes SHA-256 des charges connues :** En complément de la détection par nom, vérifier
+    l'empreinte SHA-256 de tout fichier suspect trouvé sur le disque contre une liste de hashes
+    connus — le ver renomme le fichier selon le vecteur de propagation en conservant un contenu
+    identique, rendant le hash plus fiable que le nom seul :
+    *   `9fc2570b7cef51c1b8df116d144d11ff4096357be7d2c4c6367cfc2509cf1bcc` (`Math_Symbol.js` **et**
+        `math_init.js` — même hash, deux noms selon le vecteur de propagation).
+    *   `fd3ca4007b225fdf8de7af4345a19179d5efa8c4bb9205f88cda806e5684b1eb` (`setup.mjs`).
+    *   `54dc7ea54a1317cca0e890a2770630cf7fa6c97813e0cb9d2caa93012b350668` (`setup.mjs`, variante).
+    *   Ajouter `math_init.js` et `bundle.js` aux noms de fichiers suspects connus (SPEC-F06).
+    *   Une correspondance de hash est une confirmation directe (sévérité supérieure à une simple
+        correspondance de nom, qui reste un indice).
+2.  **Persistance Claude Code / VS Code (corrige un trou de couverture de SPEC-F06) :** Rechercher
+    `.claude/setup.mjs` (déclenché par un hook `SessionStart` dans `.claude/settings.json`) et
+    `.vscode/setup.mjs` (déclenché par une tâche `folderOpen` dans `.vscode/tasks.json`) — **pas
+    seulement `<racine>/setup.mjs`** : ces sous-dossiers sont l'emplacement réel utilisé par la
+    campagne, jusqu'ici absents du scan. Rechercher également `.dev-utils/server.js`.
+3.  **Inventaire des scripts `preinstall`/`postinstall` :** Énumérer (pas seulement détecter par
+    marqueur connu) tous les scripts `preinstall`/`postinstall` déclarés dans les `package.json`
+    rencontrés (projets et `node_modules`), pour permettre l'inspection manuelle de chacun.
+4.  **Chaînes C2 connues :** Recherche passive (SPEC-F05) des domaines/marqueurs C2 dans le code
+    source : `npm-cache[.]com`, `awqhnjewqjkl[.]icu`, l'adresse du smart contract Ethereum
+    `0xE1f2395ee43e45A1556EC6438a88c31B83493103` (résolveur de C2 dynamique — CHAINDROP ne code pas
+    l'adresse en dur, il interroge ce contrat pour obtenir l'endpoint d'exfiltration courant), et
+    les marqueurs de vagues précédentes (`js-mirror.com`, `pypi-get.com`, `SANDWORM`, `official334`,
+    `webhook.site`).
+5.  **Injection MCP dans Claude Code :** Vérifier `.claude/settings.json` et `.claude.json`
+    (répertoire de config utilisateur Claude Code) pour la présence d'une clé `mcpServers`.
+6.  **Persistance via hooks git :** Vérifier la configuration git (`init.templateDir`) et le
+    contenu de `~/.git-templates/` pour des hooks suspects.
+7.  **Détournement de registre :** Extraire le champ `resolved` des lockfiles npm/yarn (SPEC-F04)
+    et signaler toute URL ne pointant pas vers un registre officiel attendu (`registry.npmjs.org`,
+    `registry.yarnpkg.com`).
+8.  **Exposition de secrets :** Vérifier `~/.npmrc` et les fichiers `.env*` du workspace pour la
+    présence de jetons/secrets en clair.
+9.  **Divergence lockfile / installé :** Comparer les versions déclarées dans le lockfile avec
+    celles réellement présentes dans `node_modules`, signaler les paquets divergents.
+
+> Prérequis d'exécution observé pour CHAINDROP : le jeton npm volé doit cumuler la permission
+> d'écriture sur le paquet **et** `bypass_2fa` (publication sans 2FA) — information contextuelle,
+> pas un signal détectable localement.
+
 ---
 
 ## ⚙️ Spécifications Techniques (SPEC-T)
