@@ -193,6 +193,15 @@ L'outil doit intégrer une journalisation structurée, distincte des barres de p
     *   `DEBUG` : détail fin de chaque vérification (projet découvert, dépendance auditée, signal de Threat Hunting détecté, sortie brute des processus `npm install`).
 *   **Mode Verbeux (`--verbose` / `-v`) :** Active le niveau `DEBUG` (uniquement pour ce binaire — les dépendances comme `ignore` restent à `INFO` pour éviter le bruit) et **journalise l'ensemble des fichiers analysés** lors du parcours (SPEC-F02), un log par fichier visité avec son chemin complet (ex. `fichier analysé : <path>`). Ce log par fichier reste désactivé par défaut (silencieux au niveau `INFO`) pour éviter un volume de sortie excessif sur de grandes arborescences.
 *   **Isolation stricte console/logs :** Les processus externes lancés par l'outil (`npm install` en simulation, SPEC-F04) ne doivent **jamais** hériter des flux stdout/stderr du binaire — leur sortie est capturée et journalisée en `DEBUG`, jamais affichée directement sur la console.
+*   **Répertoires/fichiers non traversés :** Toute entrée que le moteur de parcours (SPEC-F02) ne
+    peut pas lire (permissions insuffisantes, chemin dépassant la limite historique `MAX_PATH` de
+    Windows, boucle de symlinks...) doit être journalisée en `WARN`, **visible par défaut sans
+    `--verbose`** — un scan qui semble "manquer" des dossiers sans explication est un défaut de
+    diagnostic critique. Les exclusions volontaires (`.gitignore`/`.ignore`/fichiers cachés,
+    décidées en interne par la crate de parcours) ne sont pas des erreurs : elles restent visibles
+    via le pont `log` → `tracing` (la crate de parcours journalise ses propres décisions via la
+    façade `log` standard) combiné à `--verbose`, qui active `DEBUG` pour cette crate en plus de
+    `shai_hulud_guard`.
 *   **Fichier de log (`--log-file <path>`) :** En plus de stderr (jamais à sa place), écrire
     les logs dans le fichier indiqué, **toujours au niveau `DEBUG`** pour ce binaire —
     indépendamment de `--verbose`, qui ne contrôle que le niveau affiché sur la console. Objectif
