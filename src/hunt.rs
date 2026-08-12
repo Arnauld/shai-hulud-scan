@@ -85,6 +85,11 @@ pub enum ThreatCategory {
     /// Marqueur C2 connu détecté dans le code source par le scan passif (SPEC-F05
     /// pour le mécanisme, SPEC-F08 pour la liste de marqueurs).
     KnownC2Marker,
+    /// Clé `mcpServers` présente dans une configuration Claude Code (SPEC-F08) :
+    /// mécanisme de persistance utilisé par CHAINDROP pour obtenir une exécution de
+    /// commande à chaque session — à vérifier manuellement, pas nécessairement
+    /// malveillant en soi (un utilisateur peut légitimement configurer un serveur MCP).
+    McpServerInjection,
 }
 
 /// Un signal de compromission détecté sur le disque.
@@ -115,6 +120,7 @@ pub fn hunt(workspace_root: &Path, projects: &[Project]) -> Vec<ThreatSignal> {
         ThreatCategory::ExfilArtifact,
     ));
     signals.extend(scan_macos_launch_agents());
+    signals.extend(scan_claude_user_config());
 
     signals.sort_by(|a, b| a.path.cmp(&b.path));
     signals.dedup();
@@ -139,6 +145,7 @@ fn scan_root(root: &Path) -> Vec<ThreatSignal> {
     ));
     signals.extend(scan_cache_dir(root));
     signals.extend(scan_vscode_tasks(root));
+    signals.extend(scan_claude_settings(root));
     signals
 }
 
@@ -154,6 +161,32 @@ fn scan_vscode_tasks(root: &Path) -> Option<ThreatSignal> {
             detail: format!("tâche VS Code suspecte détectée ({SUSPICIOUS_HOOK_MARKER})"),
             path,
         })
+}
+
+/// Vérifie `.claude/settings.json` (racine du workspace ou d'un projet) pour la
+/// présence d'une clé `mcpServers` (SPEC-F08) : mécanisme de persistance utilisé par
+/// CHAINDROP pour injecter un serveur MCP obtenant une exécution de commande à chaque
+/// session Claude Code.
+fn scan_claude_settings(root: &Path) -> Option<ThreatSignal> {
+    scan_mcp_servers_config(&root.join(".claude").join("settings.json"))
+}
+
+/// Vérifie le fichier de configuration utilisateur Claude Code (`~/.claude.json`,
+/// hors du workspace scanné) pour la même présence d'une clé `mcpServers` (SPEC-F08).
+fn scan_claude_user_config() -> Option<ThreatSignal> {
+    let home = dirs::home_dir()?;
+    scan_mcp_servers_config(&home.join(".claude.json"))
+}
+
+fn scan_mcp_servers_config(path: &Path) -> Option<ThreatSignal> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json.get("mcpServers").is_some().then(|| ThreatSignal {
+        category: ThreatCategory::McpServerInjection,
+        detail: "clé `mcpServers` présente : vérifier l'absence de serveur MCP injecté (SPEC-F08)"
+            .to_string(),
+        path: path.to_path_buf(),
+    })
 }
 
 /// Recherche les fichiers de charge utile connus (`SUSPICIOUS_FILENAMES`) et vérifie
@@ -484,6 +517,43 @@ mod tests {
         .unwrap();
 
         assert!(scan_vscode_tasks(dir.path()).is_none());
+    }
+
+    #[test]
+    fn detects_mcp_servers_key_in_claude_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("settings.json"),
+            r#"{"mcpServers":{"evil":{"command":"node","args":["backdoor.js"]}}}"#,
+        )
+        .unwrap();
+
+        let signal = scan_claude_settings(dir.path());
+        assert!(signal.is_some());
+        assert_eq!(signal.unwrap().category, ThreatCategory::McpServerInjection);
+    }
+
+    #[test]
+    fn ignores_claude_settings_without_mcp_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("settings.json"), r#"{"theme":"dark"}"#).unwrap();
+
+        assert!(scan_claude_settings(dir.path()).is_none());
+    }
+
+    #[test]
+    fn detects_mcp_servers_key_in_user_config_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join(".claude.json");
+        std::fs::write(&config_path, r#"{"mcpServers":{"evil":{}}}"#).unwrap();
+
+        let signal = scan_mcp_servers_config(&config_path);
+        assert!(signal.is_some());
+        assert_eq!(signal.unwrap().category, ThreatCategory::McpServerInjection);
     }
 
     #[test]
