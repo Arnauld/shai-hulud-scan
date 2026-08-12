@@ -66,6 +66,18 @@ pub struct Cli {
     #[arg(long)]
     pub log_file: Option<PathBuf>,
 
+    /// Directive de filtrage `tracing` explicite (syntaxe `RUST_LOG`, ex.
+    /// `"info,shai_hulud_guard=debug"`) pour la sortie console (SPEC-T04). Si fournie,
+    /// supplante `--verbose`. `RUST_LOG` reste prioritaire sur ce flag s'il est défini.
+    #[arg(long)]
+    pub log_console_directive: Option<String>,
+
+    /// Directive de filtrage `tracing` explicite (syntaxe `RUST_LOG`) pour le fichier
+    /// de log (`--log-file`) : remplace la valeur par défaut, toujours DEBUG pour ce
+    /// binaire (SPEC-T04). Sans effet si `--log-file` n'est pas fourni.
+    #[arg(long)]
+    pub log_file_directive: Option<String>,
+
     /// Niveau de détail du rapport (console / `--report-file`), indépendant de
     /// `--verbose` : réutilise l'échelle `error < warn < info < debug` (SPEC-T05).
     /// Par défaut `debug` (verbose) : liste aussi les dépendances saines, pas
