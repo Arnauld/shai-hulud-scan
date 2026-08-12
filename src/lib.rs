@@ -45,7 +45,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
 
     info!(path = %cli.path.display(), "lancement de l'analyse");
     let walk_progress = spinner(cli.no_color)?;
-    let projects = discover(&cli.path, &walk_progress);
+    let projects = discover(&cli.path, &walk_progress, cli.no_ignore);
     // Le compte de fichiers ("nombre de fichier à analyser", SPEC-T04) n'est connu
     // qu'une fois le parcours terminé : il est affiché progressivement dans le
     // spinner puis figé ici sur la même ligne — pas besoin d'un log INFO séparé,

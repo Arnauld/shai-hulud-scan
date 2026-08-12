@@ -92,7 +92,7 @@ pub fn audit_installed_packages(db: &IocDatabase, project: &Project) -> Vec<Find
         return Vec::new();
     }
     let progress = ProgressBar::hidden();
-    crate::walker::walk(&node_modules, &progress)
+    crate::walker::walk(&node_modules, &progress, true)
         .filter(|entry| entry.file_name() == "package.json")
         .filter_map(|entry| {
             let content = std::fs::read_to_string(entry.path()).ok()?;

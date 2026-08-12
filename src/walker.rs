@@ -19,8 +19,11 @@ use tracing::{debug, warn};
 /// des erreurs, un choix délibéré du moteur `ignore`) sont eux visibles en journalisant
 /// la façade `log` interne de cette crate vers `tracing` (voir `main::init_logging`,
 /// directive `ignore=debug` avec `--verbose`).
-pub fn walk<'a>(root: &Path, progress: &'a ProgressBar) -> impl Iterator<Item = DirEntry> + 'a {
+pub fn walk<'a>(root: &Path, progress: &'a ProgressBar, no_ignore: bool) -> impl Iterator<Item = DirEntry> + 'a {
     WalkBuilder::new(root)
+        .git_ignore(!no_ignore)
+        .ignore(!no_ignore)
+        .parents(!no_ignore)
         .build()
         .filter_map(|entry| match entry {
             Ok(entry) => Some(entry),
@@ -78,7 +81,7 @@ mod tests {
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
 
         let progress = ProgressBar::hidden();
-        let found = walk(dir.path(), &progress)
+        let found = walk(dir.path(), &progress, false)
             .filter(|entry| entry.file_name() == "package.json")
             .count();
         assert_eq!(found, 1);

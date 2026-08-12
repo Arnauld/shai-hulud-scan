@@ -36,6 +36,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_color: bool,
 
+    /// Ne pas respecter les règles du fichier `.gitignore` (permet d'analyser les dossiers ignorés comme `nsbf`).
+    #[arg(long)]
+    pub no_ignore: bool,
+
     /// Nombre maximal de simulations `npm install` concurrentes (sémaphore, SPEC-T01).
     #[arg(long, default_value_t = 4)]
     pub workers: usize,
