@@ -5,31 +5,20 @@ use serde::Deserialize;
 use tracing::debug;
 
 use crate::discovery::Project;
-use crate::ioc::IocDatabase;
+use crate::ioc::{CompromiseStatus, IocDatabase};
 use crate::lockfile::{parse_npm_lock, parse_yarn_lock};
 
-/// Verdict d'audit d'une dépendance vis-à-vis de la base IOC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Status {
-    Vulnerable,
-    Sain,
-}
-
-/// Une dépendance résolue dans un lockfile, avec son verdict.
+/// Une dépendance résolue dans un lockfile, avec son verdict (SPEC-F04, niveau 1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     pub package: String,
     pub version: String,
-    pub status: Status,
+    pub status: CompromiseStatus,
 }
 
 /// Vérifie une dépendance par rapport à la base IOC (SPEC-F04, niveau 1).
 pub fn check_dependency(db: &IocDatabase, package: &str, version: &str) -> Finding {
-    let status = if db.is_compromised(package, version) {
-        Status::Vulnerable
-    } else {
-        Status::Sain
-    };
+    let status = db.evaluate_compromise(package, version);
     debug!(package, version, status = ?status, "dépendance auditée");
     Finding {
         package: package.to_string(),
@@ -99,15 +88,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn flags_a_compromised_dependency() {
+    fn flags_an_exact_version_match_as_corrompue() {
+        let db = IocDatabase::from_csv("ecosystem,package,versions\nnpm,evil-pkg,1.0.0\n").unwrap();
+        assert!(matches!(
+            check_dependency(&db, "evil-pkg", "1.0.0").status,
+            CompromiseStatus::Corrompue { .. }
+        ));
+    }
+
+    #[test]
+    fn flags_a_known_package_at_a_different_version_as_vulnerable_not_sain() {
+        let db = IocDatabase::from_csv("ecosystem,package,versions\nnpm,evil-pkg,1.0.0\n").unwrap();
+        assert!(matches!(
+            check_dependency(&db, "evil-pkg", "2.0.0").status,
+            CompromiseStatus::Vulnerable { .. }
+        ));
+    }
+
+    #[test]
+    fn flags_a_fully_unknown_package_as_sain() {
         let db = IocDatabase::from_csv("ecosystem,package,versions\nnpm,evil-pkg,1.0.0\n").unwrap();
         assert_eq!(
-            check_dependency(&db, "evil-pkg", "1.0.0").status,
-            Status::Vulnerable
-        );
-        assert_eq!(
-            check_dependency(&db, "evil-pkg", "2.0.0").status,
-            Status::Sain
+            check_dependency(&db, "unrelated-pkg", "2.0.0").status,
+            CompromiseStatus::Sain
         );
     }
 
@@ -139,10 +142,11 @@ mod tests {
         assert_eq!(findings.len(), 2);
         assert!(findings
             .iter()
-            .any(|f| f.package == "evil-pkg" && f.status == Status::Vulnerable));
+            .any(|f| f.package == "evil-pkg"
+                && matches!(f.status, CompromiseStatus::Corrompue { .. })));
         assert!(findings
             .iter()
-            .any(|f| f.package == "safe-pkg" && f.status == Status::Sain));
+            .any(|f| f.package == "safe-pkg" && f.status == CompromiseStatus::Sain));
     }
 
     #[test]
@@ -176,10 +180,11 @@ mod tests {
         assert_eq!(findings.len(), 2);
         assert!(findings
             .iter()
-            .any(|f| f.package == "evil-pkg" && f.status == Status::Vulnerable));
+            .any(|f| f.package == "evil-pkg"
+                && matches!(f.status, CompromiseStatus::Corrompue { .. })));
         assert!(findings
             .iter()
-            .any(|f| f.package == "safe-pkg" && f.status == Status::Sain));
+            .any(|f| f.package == "safe-pkg" && f.status == CompromiseStatus::Sain));
     }
 
     #[test]
@@ -211,6 +216,7 @@ mod tests {
         let findings = audit_installed_packages(&db, &project);
         assert!(findings
             .iter()
-            .any(|f| f.package == "evil-pkg" && f.status == Status::Vulnerable));
+            .any(|f| f.package == "evil-pkg"
+                && matches!(f.status, CompromiseStatus::Corrompue { .. })));
     }
 }

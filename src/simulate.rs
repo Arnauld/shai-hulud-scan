@@ -332,7 +332,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].status, crate::audit::Status::Vulnerable);
+        assert!(matches!(
+            findings[0].status,
+            crate::ioc::CompromiseStatus::Corrompue { .. }
+        ));
 
         // Le projet original n'a jamais été modifié.
         assert_eq!(

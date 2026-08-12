@@ -4,15 +4,16 @@
 use console::style;
 use serde::Serialize;
 
-use crate::audit::{Finding, Status};
+use crate::audit::Finding;
 use crate::hunt::ThreatSignal;
+use crate::ioc::CompromiseStatus;
 
 /// Niveau de détail du rapport (`--report-level`), indépendant du niveau de log
 /// `--verbose` (SPEC-T04) : réutilise la même échelle `ERROR < WARN < INFO < DEBUG`
 /// (SPEC-T05). Cumulatif : chaque niveau inclut le contenu des niveaux précédents.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 pub enum ReportLevel {
-    /// Uniquement les dépendances `VULNÉRABLE` et les menaces détectées.
+    /// Uniquement les dépendances `CORROMPU`/`VULNÉRABLE` et les menaces détectées.
     Error,
     /// + le nombre total de dépendances analysées.
     Warn,
@@ -35,7 +36,7 @@ pub struct Report {
 pub struct FindingReport {
     pub package: String,
     pub version: String,
-    pub vulnerable: bool,
+    pub status: CompromiseStatus,
 }
 
 impl From<&Finding> for FindingReport {
@@ -43,7 +44,7 @@ impl From<&Finding> for FindingReport {
         Self {
             package: finding.package.clone(),
             version: finding.version.clone(),
-            vulnerable: finding.status == Status::Vulnerable,
+            status: finding.status.clone(),
         }
     }
 }
@@ -98,14 +99,35 @@ impl Report {
             ));
         }
 
-        let vulnerable_count = self.findings.iter().filter(|f| f.vulnerable).count();
-        for finding in self.findings.iter().filter(|f| f.vulnerable) {
-            out.push_str(&format!(
-                "{} {}@{}\n",
-                style("[VULNÉRABLE]").red().bold(),
-                finding.package,
-                finding.version
-            ));
+        // CORROMPU et VULNÉRABLE sont toujours affichés, quel que soit le niveau :
+        // ce sont les deux verdicts anormaux (SPEC-F04), avec une sévérité distincte.
+        let mut anomaly_count = 0;
+        for finding in &self.findings {
+            match &finding.status {
+                CompromiseStatus::Corrompue { .. } => {
+                    anomaly_count += 1;
+                    out.push_str(&format!(
+                        "{} {}@{}\n",
+                        style("[CORROMPU]").red().bold(),
+                        finding.package,
+                        finding.version
+                    ));
+                }
+                CompromiseStatus::Vulnerable {
+                    known_compromised_versions,
+                    ..
+                } => {
+                    anomaly_count += 1;
+                    out.push_str(&format!(
+                        "{} {}@{} (versions compromises connues : {})\n",
+                        style("[VULNÉRABLE]").yellow().bold(),
+                        finding.package,
+                        finding.version,
+                        known_compromised_versions.join(", ")
+                    ));
+                }
+                CompromiseStatus::Sain => {}
+            }
         }
 
         for threat in &self.threats {
@@ -119,17 +141,19 @@ impl Report {
         }
 
         if level >= ReportLevel::Debug {
-            for finding in self.findings.iter().filter(|f| !f.vulnerable) {
-                out.push_str(&format!(
-                    "{} {}@{}\n",
-                    style("[SAIN]").green(),
-                    finding.package,
-                    finding.version
-                ));
+            for finding in &self.findings {
+                if finding.status == CompromiseStatus::Sain {
+                    out.push_str(&format!(
+                        "{} {}@{}\n",
+                        style("[SAIN]").green(),
+                        finding.package,
+                        finding.version
+                    ));
+                }
             }
         }
 
-        if vulnerable_count == 0 && self.threats.is_empty() {
+        if anomaly_count == 0 && self.threats.is_empty() {
             out.push_str(&format!(
                 "{}\n",
                 style("Aucune compromission détectée.").green()
@@ -144,16 +168,33 @@ impl Report {
 mod tests {
     use super::*;
 
+    fn corrompue(version: &str) -> CompromiseStatus {
+        CompromiseStatus::Corrompue {
+            version: version.to_string(),
+        }
+    }
+
+    fn vulnerable(version: &str, known_compromised_versions: &[&str]) -> CompromiseStatus {
+        CompromiseStatus::Vulnerable {
+            version: version.to_string(),
+            known_compromised_versions: known_compromised_versions
+                .iter()
+                .map(|v| v.to_string())
+                .collect(),
+        }
+    }
+
     #[test]
     fn serializes_findings_to_json() {
         let findings = vec![Finding {
             package: "evil-pkg".to_string(),
             version: "1.0.0".to_string(),
-            status: Status::Vulnerable,
+            status: corrompue("1.0.0"),
         }];
         let report = Report::from_findings(&findings);
         let json = report.to_json().unwrap();
-        assert!(json.contains("\"vulnerable\": true"));
+        assert!(json.contains("\"Corrompue\""));
+        assert!(json.contains("\"1.0.0\""));
     }
 
     #[test]
@@ -161,7 +202,7 @@ mod tests {
         let findings = vec![Finding {
             package: "evil-pkg".to_string(),
             version: "1.0.0".to_string(),
-            status: Status::Vulnerable,
+            status: corrompue("1.0.0"),
         }];
         let threats = vec![crate::hunt::ThreatSignal {
             category: crate::hunt::ThreatCategory::SuspiciousFile,
@@ -177,13 +218,28 @@ mod tests {
     }
 
     #[test]
+    fn renders_vulnerable_findings_with_known_compromised_versions() {
+        let findings = vec![Finding {
+            package: "evil-pkg".to_string(),
+            version: "2.0.0".to_string(),
+            status: vulnerable("2.0.0", &["1.0.0", "1.1.0"]),
+        }];
+        let report = Report::from_findings(&findings);
+        let text = report.render_text(ReportLevel::Error);
+
+        assert!(text.contains("[VULNÉRABLE]"));
+        assert!(text.contains("evil-pkg@2.0.0"));
+        assert!(text.contains("1.0.0, 1.1.0"));
+    }
+
+    #[test]
     fn stripping_ansi_codes_yields_the_same_plain_content() {
         console::set_colors_enabled(true);
 
         let findings = vec![Finding {
             package: "evil-pkg".to_string(),
             version: "1.0.0".to_string(),
-            status: Status::Vulnerable,
+            status: corrompue("1.0.0"),
         }];
         let report = Report::from_findings(&findings);
         let colored = report.render_text(ReportLevel::Debug);
@@ -200,12 +256,12 @@ mod tests {
             Finding {
                 package: "evil-pkg".to_string(),
                 version: "1.0.0".to_string(),
-                status: Status::Vulnerable,
+                status: corrompue("1.0.0"),
             },
             Finding {
                 package: "safe-pkg".to_string(),
                 version: "2.0.0".to_string(),
-                status: Status::Sain,
+                status: CompromiseStatus::Sain,
             },
         ];
         let report = Report::from_findings(&findings).with_project_count(3);

@@ -6,6 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
+use serde::Serialize;
 use tracing::{error, info, warn};
 
 /// URL officielle de la base d'IOC Datadog (paquets npm malveillants connus).
@@ -13,6 +14,27 @@ pub const OFFICIAL_IOC_URL: &str = "https://raw.githubusercontent.com/DataDog/in
 
 /// Nom du fichier recherché dans le répertoire d'exécution en fallback local.
 pub const LOCAL_FALLBACK_FILENAME: &str = "malicious-packages.csv";
+
+/// Résultat de la comparaison d'une dépendance avec la base IOC (SPEC-F04, niveau 1).
+/// Classification à trois niveaux, pas une simple bascule vulnérable/sain :
+/// `Vulnerable` (paquet connu de la base mais version rencontrée non listée) est
+/// **moins** sévère que `Corrompue` (correspondance exacte) — attention à l'ordre
+/// historique inversé par rapport à une ancienne version de cet enum.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type")]
+pub enum CompromiseStatus {
+    /// Le paquet n'apparaît pas du tout dans la base IOC, quelle que soit la version.
+    Sain,
+    /// Le paquet est référencé dans la base IOC (au moins une version compromise
+    /// connue) mais pas à la version rencontrée : signal de vigilance sur un paquet
+    /// ciblé par la campagne, sans confirmation exacte à cette version précise.
+    Vulnerable {
+        version: String,
+        known_compromised_versions: Vec<String>,
+    },
+    /// La version rencontrée correspond exactement à une version compromise connue.
+    Corrompue { version: String },
+}
 
 /// Base de signatures IOC : nom de paquet npm -> versions compromises.
 #[derive(Debug, Default, Clone)]
@@ -39,11 +61,23 @@ impl IocDatabase {
         Ok(Self { packages })
     }
 
-    /// Vrai si `package@version` est référencé comme compromis.
-    pub fn is_compromised(&self, package: &str, version: &str) -> bool {
-        self.packages
-            .get(package)
-            .is_some_and(|versions| versions.iter().any(|v| v == version))
+    /// Évalue `package@version` par rapport à la base IOC (SPEC-F04, niveau 1) :
+    /// `Sain` si le paquet est totalement absent de la base, `Corrompue` si la version
+    /// rencontrée correspond exactement à une version listée, `Vulnerable` si le
+    /// paquet est connu mais pas à cette version précise.
+    pub fn evaluate_compromise(&self, package: &str, version: &str) -> CompromiseStatus {
+        match self.packages.get(package) {
+            None => CompromiseStatus::Sain,
+            Some(known_versions) if known_versions.iter().any(|v| v == version) => {
+                CompromiseStatus::Corrompue {
+                    version: version.to_string(),
+                }
+            }
+            Some(known_versions) => CompromiseStatus::Vulnerable {
+                version: version.to_string(),
+                known_compromised_versions: known_versions.clone(),
+            },
+        }
     }
 
     /// Charge la base IOC (SPEC-F01) : tente d'abord le téléchargement depuis l'URL
@@ -126,10 +160,36 @@ mod tests {
                    npm,@cacheable/memory,2.2.1\n\
                    npm,@arv-bedrock/auth,1.1.7 | 1.1.8\n";
         let db = IocDatabase::from_csv(csv).unwrap();
-        assert!(db.is_compromised("@cacheable/memory", "2.2.1"));
-        assert!(db.is_compromised("@arv-bedrock/auth", "1.1.8"));
-        assert!(!db.is_compromised("@cacheable/memory", "9.9.9"));
-        assert!(!db.is_compromised("unknown-package", "1.0.0"));
+        assert_eq!(
+            db.evaluate_compromise("@cacheable/memory", "2.2.1"),
+            CompromiseStatus::Corrompue {
+                version: "2.2.1".to_string()
+            }
+        );
+        assert_eq!(
+            db.evaluate_compromise("@arv-bedrock/auth", "1.1.8"),
+            CompromiseStatus::Corrompue {
+                version: "1.1.8".to_string()
+            }
+        );
+        assert_eq!(
+            db.evaluate_compromise("unknown-package", "1.0.0"),
+            CompromiseStatus::Sain
+        );
+    }
+
+    #[test]
+    fn flags_a_known_package_at_an_unlisted_version_as_vulnerable_not_sain() {
+        let csv = "ecosystem,package,versions\nnpm,@cacheable/memory,2.2.1 | 2.2.2\n";
+        let db = IocDatabase::from_csv(csv).unwrap();
+
+        assert_eq!(
+            db.evaluate_compromise("@cacheable/memory", "9.9.9"),
+            CompromiseStatus::Vulnerable {
+                version: "9.9.9".to_string(),
+                known_compromised_versions: vec!["2.2.1".to_string(), "2.2.2".to_string()],
+            }
+        );
     }
 
     #[tokio::test]
@@ -142,7 +202,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(db.is_compromised("evil-pkg", "1.0.0"));
+        assert!(matches!(
+            db.evaluate_compromise("evil-pkg", "1.0.0"),
+            CompromiseStatus::Corrompue { .. }
+        ));
     }
 
     #[tokio::test]
@@ -158,7 +221,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(db.is_compromised("evil-pkg", "1.0.0"));
+        assert!(matches!(
+            db.evaluate_compromise("evil-pkg", "1.0.0"),
+            CompromiseStatus::Corrompue { .. }
+        ));
     }
 
     #[tokio::test]
@@ -172,7 +238,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(db.is_compromised("evil-pkg", "1.0.0"));
+        assert!(matches!(
+            db.evaluate_compromise("evil-pkg", "1.0.0"),
+            CompromiseStatus::Corrompue { .. }
+        ));
     }
 
     #[tokio::test]
@@ -198,6 +267,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(db.is_compromised("evil-pkg", "1.0.0"));
+        assert!(matches!(
+            db.evaluate_compromise("evil-pkg", "1.0.0"),
+            CompromiseStatus::Corrompue { .. }
+        ));
     }
 }
