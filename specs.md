@@ -144,6 +144,18 @@ L'outil doit intégrer une journalisation structurée, distincte des barres de p
 *   **Niveaux :**
     *   `ERROR` : échec bloquant (ex. échec réseau **et** absence de fallback local pour la base IOC).
     *   `WARN` : échec partiel toléré (ex. simulation `npm install` échouée pour un projet, restauration du lockfile d'origine).
-    *   `INFO` (niveau par défaut) : jalons de haut niveau (projet découvert, base IOC chargée, rapport généré).
-    *   `DEBUG` : détail fin de chaque vérification (dépendance auditée, signal de Threat Hunting détecté).
-*   **Mode Verbeux (`--verbose` / `-v`) :** Active le niveau `DEBUG` et **journalise l'ensemble des fichiers analysés** lors du parcours (SPEC-F02), un log par fichier visité avec son chemin complet (ex. `fichier analysé : <path>`). Ce log par fichier reste désactivé par défaut (silencieux au niveau `INFO`) pour éviter un volume de sortie excessif sur de grandes arborescences.
+    *   `INFO` (niveau par défaut) : jalons de haut niveau, peu nombreux et non répétitifs (ex. lancement de l'analyse, base IOC chargée) — jamais un log par élément individuel (projet, dépendance, fichier), même sur un grand workspace.
+    *   `DEBUG` : détail fin de chaque vérification (projet découvert, dépendance auditée, signal de Threat Hunting détecté, sortie brute des processus `npm install`).
+*   **Mode Verbeux (`--verbose` / `-v`) :** Active le niveau `DEBUG` (uniquement pour ce binaire — les dépendances comme `ignore` restent à `INFO` pour éviter le bruit) et **journalise l'ensemble des fichiers analysés** lors du parcours (SPEC-F02), un log par fichier visité avec son chemin complet (ex. `fichier analysé : <path>`). Ce log par fichier reste désactivé par défaut (silencieux au niveau `INFO`) pour éviter un volume de sortie excessif sur de grandes arborescences.
+*   **Isolation stricte console/logs :** Les processus externes lancés par l'outil (`npm install` en simulation, SPEC-F04) ne doivent **jamais** hériter des flux stdout/stderr du binaire — leur sortie est capturée et journalisée en `DEBUG`, jamais affichée directement sur la console.
+
+### SPEC-T05 - Niveau de verbosité du rapport
+Le rapport final (console et `--report-file`) doit exposer un niveau de détail configurable, **indépendant** du niveau de log `--verbose` (SPEC-T04) : par défaut, un utilisateur qui lance un scan de sécurité veut voir le résultat complet sans avoir à activer un mode diagnostique séparé.
+*   **Flag CLI :** `--report-level <error|warn|info|debug>`, réutilisant la même échelle que la journalisation (SPEC-T04) plutôt qu'une taxonomie de verbosité ad hoc.
+*   **Valeur par défaut : `debug`** (verbose) — volontairement l'inverse du niveau de log par défaut (`info`) : le bruit diagnostique doit rester discret par défaut, mais le résultat du scan doit être complet par défaut.
+*   **Contenu par niveau (cumulatif, du plus restrictif au plus complet) :**
+    *   `ERROR` : uniquement les dépendances `VULNÉRABLE` et les signaux de Threat Hunting détectés (ou `"Aucune compromission détectée"` si le scan est propre) — jamais masqué, quel que soit le niveau choisi.
+    *   `WARN` : ajoute le nombre total de dépendances analysées.
+    *   `INFO` : ajoute le nombre de projets npm/yarn analysés.
+    *   `DEBUG` (par défaut) : ajoute la liste complète des dépendances `SAIN`, pour une transparence totale sur tout ce qui a été vérifié.
+*   **Portée :** S'applique uniquement au rendu texte (console et `--report-file`, tous deux dérivés du même rendu). Le format `--json` reste toujours complet (SPEC-T02), indépendamment de `--report-level`, puisqu'il est destiné à l'intégration programmatique et ne doit pas perdre d'information selon la verbosité choisie.
