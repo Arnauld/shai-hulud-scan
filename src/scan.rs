@@ -87,12 +87,12 @@ fn has_literal_dotenv_secret(content: &str) -> bool {
 /// d'instructions d'installation directes mentionnées (SPEC-F05, simple indice
 /// contextuel — souvent bénin, ex. un README — retourné séparément, pas un
 /// `ThreatSignal`).
-pub fn scan_workspace(workspace_root: &Path) -> (Vec<ThreatSignal>, Vec<PathBuf>) {
+pub fn scan_workspace(workspace_root: &Path, no_ignore: bool) -> (Vec<ThreatSignal>, Vec<PathBuf>) {
     let progress = ProgressBar::hidden();
     let mut threat_signals = Vec::new();
     let mut install_mentions = Vec::new();
 
-    for entry in crate::walker::walk_including_hidden(workspace_root, &progress) {
+    for entry in crate::walker::walk_including_hidden(workspace_root, &progress, no_ignore) {
         let path = entry.path();
         if !entry.file_type().is_some_and(|ft| ft.is_file()) || is_excluded(path) {
             continue;
@@ -163,7 +163,7 @@ mod tests {
         )
         .unwrap();
 
-        let (threat_signals, install_mentions) = scan_workspace(dir.path());
+        let (threat_signals, install_mentions) = scan_workspace(dir.path(), false);
 
         assert_eq!(threat_signals.len(), 1);
         assert_eq!(threat_signals[0].category, ThreatCategory::KnownC2Marker);
@@ -182,7 +182,7 @@ mod tests {
         )
         .unwrap();
 
-        let (threat_signals, _) = scan_workspace(dir.path());
+        let (threat_signals, _) = scan_workspace(dir.path(), false);
 
         assert_eq!(threat_signals.len(), 1);
         assert_eq!(threat_signals[0].category, ThreatCategory::ExposedSecret);
@@ -194,7 +194,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "API_TOKEN=${API_TOKEN}\n").unwrap();
 
-        let (threat_signals, _) = scan_workspace(dir.path());
+        let (threat_signals, _) = scan_workspace(dir.path(), false);
         assert!(threat_signals.is_empty());
     }
 }

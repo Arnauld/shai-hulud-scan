@@ -36,7 +36,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_color: bool,
 
-    /// Ne pas respecter les règles du fichier `.gitignore` (permet d'analyser les dossiers ignorés comme `nsbf`).
+    /// Ne pas respecter les règles `.gitignore`/`.ignore`/parent (SPEC-F02) : sans ce
+    /// flag, un sous-dépôt intentionnellement ignoré (clone imbriqué, dépendance
+    /// vendored...) est silencieusement absent de la découverte de projets, de l'audit
+    /// `node_modules` et du scan passif (SPEC-F05/F08).
     #[arg(long)]
     pub no_ignore: bool,
 

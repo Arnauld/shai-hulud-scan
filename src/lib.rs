@@ -70,7 +70,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         .iter()
         .flat_map(|project| hunt::inventory_install_scripts(&project.root))
         .collect();
-    let (passive_scan_signals, install_command_mentions) = scan::scan_workspace(&cli.path);
+    let (passive_scan_signals, install_command_mentions) =
+        scan::scan_workspace(&cli.path, cli.no_ignore);
     threats.extend(passive_scan_signals);
     threats.extend(projects.iter().flat_map(registry::scan_project));
     threats.extend(projects.iter().flat_map(audit::audit_lockfile_drift));

@@ -45,6 +45,14 @@ npm,@hubsync/web-sdk-react,6.3.7 | 6.3.8 | 6.3.9 | 6.3.10 | 6.3.11 | 6.3.12 | 6.
 ### SPEC-F02 - Moteur de recherche et de parcours de fichiers ultra-rapide
 Pour le parcours du système de fichiers, le binaire Rust doit s'affranchir des commandes système (`find`, `grep`, `rg`) afin de garantir une indépendance totale et des performances maximales, en particulier sur les systèmes de fichiers lents (ex. montages DrvFs / WSL `/mnt/c/`).
 *   **Crate Recommandé :** Utiliser la crate **`ignore`** (le moteur de parcours parallèle derrière ripgrep). Elle gère nativement le multi-threading, respecte les fichiers `.gitignore`, filtre les dossiers cachés et permet d'élaguer très rapidement les arborescences géantes de dépendances.
+*   **`--no-ignore` :** Flag CLI désactivant les règles `.gitignore`/`.ignore`/parent (mais pas
+    le filtrage des dossiers cachés) pour la découverte de projets (SPEC-F03), l'audit des
+    paquets déjà installés (SPEC-F04) et le scan passif (SPEC-F05/F08) — sans lui, un
+    sous-dépôt intentionnellement ignoré (clone imbriqué, dépendance vendored...) est
+    silencieusement absent de l'analyse.
+*   **Fichiers cachés (`.env*`) :** Le scan passif (SPEC-F05/F08) a besoin de voir les
+    dotfiles, élagués par défaut par la crate `ignore` — une variante de parcours dédiée
+    inclut les fichiers/dossiers cachés (`.git/` reste exclu, jamais utile à inspecter).
 
 voir https://github.com/BurntSushi/ripgrep/blob/master/Cargo.toml
 
