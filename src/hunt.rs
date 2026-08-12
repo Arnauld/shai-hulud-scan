@@ -99,6 +99,9 @@ pub enum ThreatCategory {
     /// git résultant (SPEC-F08) : persistance assurant une réinfection automatique à
     /// chaque `git init`/`git clone`.
     GitHookPersistence,
+    /// Champ `resolved` d'une dépendance verrouillée pointant vers un hôte hors de
+    /// l'allowlist des registres officiels (SPEC-F08) : détournement de registre.
+    HijackedRegistry,
 }
 
 /// Un signal de compromission détecté sur le disque.

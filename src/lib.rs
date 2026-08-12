@@ -4,6 +4,7 @@ pub mod discovery;
 pub mod hunt;
 pub mod ioc;
 pub mod lockfile;
+pub mod registry;
 pub mod report;
 pub mod scan;
 pub mod simulate;
@@ -71,6 +72,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         .collect();
     let (c2_signals, install_command_mentions) = scan::scan_workspace(&cli.path);
     threats.extend(c2_signals);
+    threats.extend(projects.iter().flat_map(registry::scan_project));
 
     let project_count = projects.len();
     let db = Arc::new(db);
