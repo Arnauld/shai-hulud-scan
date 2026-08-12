@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use indicatif::ProgressBar;
-use tracing::info;
+use tracing::debug;
 
 /// Un projet Node.js détecté par la présence d'un `package.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +40,10 @@ pub fn discover(root: &Path, progress: &ProgressBar) -> Vec<Project> {
         .collect();
 
     for project in &projects {
-        info!(
+        // DEBUG (pas INFO) : un projet par ligne inonderait la console par défaut sur
+        // un gros workspace. Le décompte global reste visible via la barre de
+        // progression (SPEC-T02/T04).
+        debug!(
             project = %project.root.display(),
             npm_lock = project.has_npm_lock,
             yarn_lock = project.has_yarn_lock,

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Semaphore;
-use tracing::info;
+use tracing::{debug, info};
 
 use cli::Cli;
 use discovery::discover;
@@ -31,9 +31,18 @@ use report::Report;
 pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     let db = IocDatabase::load(cli.database.as_deref(), cli.offline).await?;
 
+    info!(path = %cli.path.display(), "lancement de l'analyse");
     let walk_progress = spinner(cli.no_color)?;
     let projects = discover(&cli.path, &walk_progress);
-    walk_progress.finish_with_message(format!("{} projet(s) découvert(s)", projects.len()));
+    // Le compte de fichiers ("nombre de fichier à analyser", SPEC-T04) n'est connu
+    // qu'une fois le parcours terminé : il est affiché progressivement dans le
+    // spinner puis figé ici sur la même ligne — pas besoin d'un log INFO séparé,
+    // c'est déjà une information console visible.
+    walk_progress.finish_with_message(format!(
+        "{} fichier(s) analysé(s), {} projet(s) découvert(s)",
+        walk_progress.position(),
+        projects.len()
+    ));
 
     let mut findings: Vec<_> = projects
         .iter()
@@ -65,7 +74,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     }
     simulation_progress.finish_and_clear();
 
-    info!(
+    // DEBUG (pas INFO) : le rapport lui-même (stdout / --report-file / --json) est
+    // déjà la restitution visible du résultat, inutile de la dupliquer en console.
+    debug!(
         findings = findings.len(),
         threats = threats.len(),
         "rapport généré"

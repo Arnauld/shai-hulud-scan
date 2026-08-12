@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use tokio::process::Command;
 use tokio::sync::Semaphore;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::audit::{check_dependency, Finding};
 use crate::discovery::Project;
@@ -37,12 +37,31 @@ pub async fn simulate_install(
     run_simulation(project, db, semaphore, run_npm_install).await
 }
 
+/// Lance `npm install` avec stdout/stderr capturés (jamais hérités du process
+/// parent) : la sortie de npm ne doit jamais fuiter sur la console de
+/// shai-hulud-guard, elle est journalisée en DEBUG pour le diagnostic (SPEC-T04).
 async fn run_npm_install(root: PathBuf) -> std::io::Result<()> {
-    Command::new("npm")
+    let output = Command::new("npm")
         .args(NPM_ARGS)
         .current_dir(&root)
-        .status()
+        .output()
         .await?;
+
+    if !output.stdout.is_empty() {
+        debug!(
+            project = %root.display(),
+            stdout = %String::from_utf8_lossy(&output.stdout),
+            "sortie npm install"
+        );
+    }
+    if !output.stderr.is_empty() {
+        debug!(
+            project = %root.display(),
+            stderr = %String::from_utf8_lossy(&output.stderr),
+            "sortie npm install"
+        );
+    }
+
     Ok(())
 }
 
