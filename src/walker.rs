@@ -40,6 +40,34 @@ pub fn walk<'a>(root: &Path, progress: &'a ProgressBar) -> impl Iterator<Item = 
         })
 }
 
+/// Variante de [`walk`] incluant les fichiers et dossiers cachés, élagués par défaut
+/// par la crate `ignore` — ce qui rend `.env*` invisible au parcours standard. `.git/`
+/// reste exclu (jamais utile à inspecter, potentiellement volumineux). Réservée aux
+/// vérifications qui doivent explicitement voir les dotfiles (SPEC-F08).
+pub fn walk_including_hidden<'a>(
+    root: &Path,
+    progress: &'a ProgressBar,
+) -> impl Iterator<Item = DirEntry> + 'a {
+    WalkBuilder::new(root)
+        .hidden(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build()
+        .filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "entrée ignorée lors du parcours (non lisible : permissions, chemin trop long, boucle de symlinks...)"
+                );
+                None
+            }
+        })
+        .inspect(move |entry| {
+            progress.inc(1);
+            debug!(path = %entry.path().display(), "fichier analysé (dotfiles inclus)");
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

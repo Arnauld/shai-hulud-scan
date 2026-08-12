@@ -70,8 +70,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         .iter()
         .flat_map(|project| hunt::inventory_install_scripts(&project.root))
         .collect();
-    let (c2_signals, install_command_mentions) = scan::scan_workspace(&cli.path);
-    threats.extend(c2_signals);
+    let (passive_scan_signals, install_command_mentions) = scan::scan_workspace(&cli.path);
+    threats.extend(passive_scan_signals);
     threats.extend(projects.iter().flat_map(registry::scan_project));
 
     let project_count = projects.len();

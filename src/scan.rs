@@ -1,5 +1,6 @@
 //! Détection passive dans le code source : instructions d'installation directes
-//! (SPEC-F05) et marqueurs C2 connus des campagnes Shai-Hulud / CHAINDROP (SPEC-F08).
+//! (SPEC-F05), marqueurs C2 connus des campagnes Shai-Hulud / CHAINDROP (SPEC-F08) et
+//! secrets en clair dans les fichiers `.env*` du workspace (SPEC-F08).
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -55,17 +56,43 @@ fn is_excluded(path: &Path) -> bool {
         .is_some_and(|ext| EXCLUDED_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
-/// Scanne tous les fichiers du workspace (hors extensions exclues, SPEC-F05) à la
-/// recherche de marqueurs C2 connus (SPEC-F08, retournés comme `ThreatSignal`
-/// directement exploitables — confirmation de compromission) et d'instructions
-/// d'installation directes mentionnées (SPEC-F05, simple indice contextuel — souvent
-/// bénin, ex. un README — retourné séparément, pas un `ThreatSignal`).
+fn is_dotenv_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(".env"))
+}
+
+/// Vrai si `content` (contenu d'un fichier `.env*`) porte au moins une assignation
+/// `CLE=valeur` en clair (SPEC-F08) — les valeurs interpolées via `${VAR}` restent
+/// sûres et ne sont pas comptées.
+fn has_literal_dotenv_secret(content: &str) -> bool {
+    content.lines().any(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return false;
+        }
+        let Some((_, value)) = trimmed.split_once('=') else {
+            return false;
+        };
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        !value.is_empty() && !value.starts_with("${")
+    })
+}
+
+/// Scanne tous les fichiers du workspace, **dotfiles inclus** (hors extensions
+/// exclues, SPEC-F05 — l'inclusion des fichiers cachés est nécessaire pour voir les
+/// `.env*`, normalement élagués par le parcours standard, SPEC-F08) à la recherche de
+/// marqueurs C2 connus (SPEC-F08), de fichiers `.env*` porteurs de secrets en clair
+/// (SPEC-F08, tous deux retournés comme `ThreatSignal` directement exploitables) et
+/// d'instructions d'installation directes mentionnées (SPEC-F05, simple indice
+/// contextuel — souvent bénin, ex. un README — retourné séparément, pas un
+/// `ThreatSignal`).
 pub fn scan_workspace(workspace_root: &Path) -> (Vec<ThreatSignal>, Vec<PathBuf>) {
     let progress = ProgressBar::hidden();
-    let mut c2_signals = Vec::new();
+    let mut threat_signals = Vec::new();
     let mut install_mentions = Vec::new();
 
-    for entry in crate::walker::walk(workspace_root, &progress) {
+    for entry in crate::walker::walk_including_hidden(workspace_root, &progress) {
         let path = entry.path();
         if !entry.file_type().is_some_and(|ft| ft.is_file()) || is_excluded(path) {
             continue;
@@ -80,15 +107,24 @@ pub fn scan_workspace(workspace_root: &Path) -> (Vec<ThreatSignal>, Vec<PathBuf>
 
         let markers = find_known_c2_markers(&content);
         if !markers.is_empty() {
-            c2_signals.push(ThreatSignal {
+            threat_signals.push(ThreatSignal {
                 category: ThreatCategory::KnownC2Marker,
                 detail: format!("marqueur(s) C2 connu(s) : {}", markers.join(", ")),
                 path: path.to_path_buf(),
             });
         }
+
+        if is_dotenv_file(path) && has_literal_dotenv_secret(&content) {
+            threat_signals.push(ThreatSignal {
+                category: ThreatCategory::ExposedSecret,
+                detail: "fichier .env avec valeur(s) en clair détecté dans le workspace"
+                    .to_string(),
+                path: path.to_path_buf(),
+            });
+        }
     }
 
-    (c2_signals, install_mentions)
+    (threat_signals, install_mentions)
 }
 
 #[cfg(test)]
@@ -127,13 +163,38 @@ mod tests {
         )
         .unwrap();
 
-        let (c2_signals, install_mentions) = scan_workspace(dir.path());
+        let (threat_signals, install_mentions) = scan_workspace(dir.path());
 
-        assert_eq!(c2_signals.len(), 1);
-        assert_eq!(c2_signals[0].category, ThreatCategory::KnownC2Marker);
-        assert!(c2_signals[0].path.ends_with("deploy.sh"));
+        assert_eq!(threat_signals.len(), 1);
+        assert_eq!(threat_signals[0].category, ThreatCategory::KnownC2Marker);
+        assert!(threat_signals[0].path.ends_with("deploy.sh"));
 
         assert_eq!(install_mentions.len(), 1);
         assert!(install_mentions[0].ends_with("README.md"));
+    }
+
+    #[test]
+    fn detects_a_literal_secret_in_a_dotenv_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env.production"),
+            "# comment\nAPI_TOKEN=sk_live_abcdef123456\n",
+        )
+        .unwrap();
+
+        let (threat_signals, _) = scan_workspace(dir.path());
+
+        assert_eq!(threat_signals.len(), 1);
+        assert_eq!(threat_signals[0].category, ThreatCategory::ExposedSecret);
+        assert!(threat_signals[0].path.ends_with(".env.production"));
+    }
+
+    #[test]
+    fn ignores_a_dotenv_file_with_only_env_interpolated_values() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".env"), "API_TOKEN=${API_TOKEN}\n").unwrap();
+
+        let (threat_signals, _) = scan_workspace(dir.path());
+        assert!(threat_signals.is_empty());
     }
 }

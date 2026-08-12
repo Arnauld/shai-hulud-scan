@@ -102,6 +102,9 @@ pub enum ThreatCategory {
     /// Champ `resolved` d'une dépendance verrouillée pointant vers un hôte hors de
     /// l'allowlist des registres officiels (SPEC-F08) : détournement de registre.
     HijackedRegistry,
+    /// Jeton/secret en clair détecté dans `~/.npmrc` ou un fichier `.env*` du
+    /// workspace (SPEC-F08).
+    ExposedSecret,
 }
 
 /// Un signal de compromission détecté sur le disque.
@@ -134,6 +137,7 @@ pub fn hunt(workspace_root: &Path, projects: &[Project]) -> Vec<ThreatSignal> {
     signals.extend(scan_macos_launch_agents());
     signals.extend(scan_claude_user_config());
     signals.extend(scan_git_hook_persistence());
+    signals.extend(scan_npmrc_secrets());
 
     signals.sort_by(|a, b| a.path.cmp(&b.path));
     signals.dedup();
@@ -494,6 +498,49 @@ fn scan_git_template_hooks_dir(template_dir: &Path) -> Vec<ThreatSignal> {
         .collect()
 }
 
+/// Clés `.npmrc` porteuses d'un jeton d'authentification (SPEC-F08).
+const NPMRC_SECRET_KEYS: &[&str] = &["_authToken", "_password", "_auth"];
+
+/// Vérifie `~/.npmrc` (SPEC-F08) pour un jeton d'authentification npm en clair. Les
+/// valeurs interpolées via `${VAR}` restent sûres (résolues depuis l'environnement,
+/// jamais commises en clair) et ne sont pas signalées.
+pub fn scan_npmrc_secrets() -> Vec<ThreatSignal> {
+    match dirs::home_dir() {
+        Some(home) => scan_npmrc_secrets_at(&home.join(".npmrc")),
+        None => Vec::new(),
+    }
+}
+
+fn scan_npmrc_secrets_at(path: &Path) -> Vec<ThreatSignal> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') || trimmed.starts_with(';') {
+                return None;
+            }
+            let (key, value) = trimmed.split_once('=')?;
+            let key = key.trim();
+            let value = value.trim();
+            if value.is_empty() || value.starts_with("${") {
+                return None;
+            }
+            NPMRC_SECRET_KEYS
+                .iter()
+                .any(|marker| key.ends_with(marker))
+                .then(|| ThreatSignal {
+                    category: ThreatCategory::ExposedSecret,
+                    detail: format!("jeton en clair détecté dans .npmrc ({key})"),
+                    path: path.to_path_buf(),
+                })
+        })
+        .collect()
+}
+
 fn scan_launch_agents_dir(dir: &Path) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -778,6 +825,39 @@ mod tests {
         .unwrap();
 
         assert!(scan_git_hook_persistence_at(home.path()).is_empty());
+    }
+
+    #[test]
+    fn detects_a_literal_auth_token_in_npmrc() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".npmrc");
+        std::fs::write(
+            &path,
+            "//registry.npmjs.org/:_authToken=npm_abcdefghijklmnop\nregistry=https://registry.npmjs.org/\n",
+        )
+        .unwrap();
+
+        let signals = scan_npmrc_secrets_at(&path);
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].category, ThreatCategory::ExposedSecret);
+    }
+
+    #[test]
+    fn ignores_an_env_interpolated_npmrc_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".npmrc");
+        std::fs::write(&path, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n").unwrap();
+
+        assert!(scan_npmrc_secrets_at(&path).is_empty());
+    }
+
+    #[test]
+    fn ignores_an_npmrc_without_auth_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".npmrc");
+        std::fs::write(&path, "registry=https://registry.npmjs.org/\n").unwrap();
+
+        assert!(scan_npmrc_secrets_at(&path).is_empty());
     }
 
     #[test]
