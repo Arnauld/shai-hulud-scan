@@ -71,3 +71,27 @@ fn parses_real_yarn_berry_lockfile_and_ignores_metadata_block() {
     assert!(!deps.is_empty());
     assert!(deps.iter().all(|d| d.name != "__metadata"));
 }
+
+#[test]
+fn parses_large_real_npm_lockfile_version_3_with_many_nested_conflicts() {
+    let content = fixture("project-01/package-lock.json");
+    let deps = parse_npm_lock(&content).expect("lockfile v3 valide");
+
+    // Échelle réelle : ~1160 paquets dans le lockfile source.
+    assert!(deps.len() > 1000);
+    assert!(deps
+        .iter()
+        .any(|d| d.name == "@angular/core" && d.version == "20.3.15"));
+
+    // Conflit de version réel sur une dépendance transitive largement partagée :
+    // "semver" est résolu à 3 versions différentes selon l'emplacement imbriqué
+    // (hissé à la racine, imbriqué sous @babel/core, imbriqué sous make-dir).
+    let semver_versions: std::collections::HashSet<&str> = deps
+        .iter()
+        .filter(|d| d.name == "semver")
+        .map(|d| d.version.as_str())
+        .collect();
+    assert!(semver_versions.contains("5.7.2"));
+    assert!(semver_versions.contains("6.3.1"));
+    assert!(semver_versions.contains("7.7.2"));
+}

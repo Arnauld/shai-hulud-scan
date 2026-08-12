@@ -1,0 +1,75 @@
+{
+  "name": "prj-ihm",
+  "version": "10.0.0-SNAPSHOT",
+  "description": "Back office app for agents",
+  "keywords": [
+    "backoffice",
+    "angular"
+  ],
+  "license": "UNLICENSED",
+  "author": "PRJ contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.myproject.com/repository/prj-ihm.git"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "ng serve",
+    "build": "ng build --configuration production",
+    "build:local": "ng build",
+    "test": "ng test",
+    "lint": "ng lint",
+    "e2e": "ng e2e"
+  },
+  "dependencies": {
+    "@angular/animations": "~20.3.15",
+    "@angular/cdk": "~20.2.14",
+    "@angular/common": "~20.3.15",
+    "@angular/compiler": "~20.3.15",
+    "@angular/core": "~20.3.15",
+    "@angular/forms": "~20.3.15",
+    "@angular/localize": "~20.3.15",
+    "@angular/platform-browser": "~20.3.15",
+    "@angular/platform-browser-dynamic": "~20.3.15",
+    "@angular/router": "~20.3.15",
+    "@ngrx/effects": "^20.0.0",
+    "@ngrx/router-store": "^20.0.0",
+    "@ngrx/store": "^20.0.0",
+    "@primeng/themes": "~20.3.0",
+    "angular-auth-oidc-client": "^20.0.0",
+    "date-fns": "^4.1.0",
+    "lodash-es": "^4.18.1",
+    "primeflex": "^2.0.0",
+    "primeicons": "^7.0.0",
+    "primeng": "^20.0.0",
+    "rxjs": "^7.8.1",
+    "tslib": "^2.8.1",
+    "zone.js": "~0.15.1"
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "~20.3.13",
+    "@angular-eslint/eslint-plugin": "^20.2.0",
+    "@angular/cli": "^20.3.13",
+    "@angular/compiler-cli": "~20.3.15",
+    "@ngrx/store-devtools": "^20.0.0",
+    "@types/node": "^24.10.1",
+    "@typescript-eslint/eslint-plugin": "^8.43.0",
+    "@typescript-eslint/parser": "^8.43.0",
+    "eslint": "^9.35.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-prettier": "^5.5.4",
+    "eslint-plugin-simple-import-sort": "^12.1.1",
+    "eslint-plugin-unused-imports": "^4.2.0",
+    "prettier": "^3.7.4",
+    "stylelint": "^16.24.0",
+    "stylelint-config-sass-guidelines": "^12.1.0",
+    "stylelint-scss": "^6.12.1",
+    "ts-node": "~8.3.0",
+    "typescript": "5.8.3",
+    "typescript-eslint": "^8.43.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

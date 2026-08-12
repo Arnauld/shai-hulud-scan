@@ -17,6 +17,7 @@ si besoin.
 | `npm-v3-empty-stackblitz-node/` | [stackblitz/starters](https://github.com/stackblitz/starters) (`node/`) | `5f85544` | `package-lock.json` v3 **sans aucune dépendance** (uniquement l'entrée racine `""`) — cas limite : le parseur doit retourner une liste vide sans erreur. |
 | `yarn-classic-serve-handler/` | [vercel/serve-handler](https://github.com/vercel/serve-handler) | `af11c99` | `yarn.lock` **Yarn Classic (v1)** (`# yarn lockfile v1`, syntaxe `version "x.y.z"`). |
 | `yarn-berry-clipanion/` | [arcanis/clipanion](https://github.com/arcanis/clipanion) | `434b5a6` | `yarn.lock` **Yarn Berry (v2+)** (bloc `__metadata:`, syntaxe `version: x.y.z`, protocole `@npm:`). |
+| `project-01/` | Projet Angular réel fourni par l'utilisateur (dépôt interne, non public) | — | `package-lock.json` **`lockfileVersion: 3`**, échelle réelle (**1160** paquets). Contient **207** cas de dépendances transitives en conflit de version (ex. `node_modules/@babel/core/node_modules/semver` vs la copie hissée). |
 
 Récupérées le 2026-08-12 depuis la branche par défaut de chaque dépôt, à la révision
 indiquée (`git log -1` équivalent au moment du téléchargement) :
