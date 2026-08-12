@@ -1,0 +1,52 @@
+# Signatures de Threat Hunting pour shai-hulud-guard (SPEC-F06/F07).
+#
+# Ces indicateurs de compromission (IOC) évoluent vite avec les campagnes
+# (nouvelles variantes publiées régulièrement par Datadog, JFrog, Wiz, Aikido,
+# Socket.dev...). Ce fichier externalise la liste de fichiers/chaînes suspects du
+# moteur de Threat Hunting pour permettre sa mise à jour sans recompilation du
+# binaire, conformément à la note de specs.md sous SPEC-F07.
+#
+# Ce fichier documente le schéma cible et reflète les valeurs par défaut
+# actuellement en dur dans src/hunt.rs ; le chargement de ce fichier par le binaire
+# reste à implémenter (le binaire utilise pour l'instant toujours ses valeurs par
+# défaut intégrées, identiques à celles ci-dessous).
+
+# Fichiers de charge utile connus, recherchés à la racine du workspace et de chaque
+# projet (SPEC-F06 point 2, SPEC-F07 point 1).
+suspicious_filenames = [
+    "setup.mjs",
+    "Math_Symbol.js",
+    "setup_bun.js",
+    "bun_environment.js",
+]
+
+# Chaîne recherchée dans les hooks de `<pkg_dir>/node_modules/*/package.json`
+# (SPEC-F06 point 1).
+suspicious_hook_marker = "setup.mjs"
+
+# Chaîne recherchée dans les LaunchAgents macOS `~/Library/LaunchAgents/`
+# (SPEC-F06 point 3).
+suspicious_launch_agent_marker = "gh-token-monitor"
+
+# Fichiers d'exfiltration générés localement par la vague "Second Coming"
+# (SPEC-F07 point 2), recherchés aux racines des projets et dans le répertoire
+# temporaire système.
+exfil_artifact_filenames = [
+    "cloud.json",
+    "contents.json",
+    "environment.json",
+    "truffleSecrets.json",
+    "actionsSecrets.json",
+    "data.json",
+]
+
+# Noms de workflows GitHub Actions malveillants connus, injectés dans
+# `.github/workflows/` (SPEC-F07 point 3).
+suspicious_workflow_filenames = [
+    "shai-hulud-workflow.yml",
+    "discussion.yaml",
+]
+
+# Dossier de cache caché utilisé pour dissimuler un binaire TruffleHog détourné
+# (SPEC-F07 point 1).
+suspicious_cache_dirname = ".truffler-cache"

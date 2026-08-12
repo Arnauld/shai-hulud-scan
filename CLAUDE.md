@@ -9,7 +9,8 @@
 Toutes les specs fonctionnelles (SPEC-F01 à F07) et techniques (SPEC-T01 à T03) sont implémentées : chargement IOC réseau + fallback + `--offline`, parcours `ignore`, découverte npm/yarn, audit lockfiles + simulation `npm install`, scan regex, moteur de Threat Hunting, sortie console colorée/JSON/rapport-fichier avec barres `indicatif`, et packaging cross-plateforme (voir ci-dessous).
 
 ## Architecture cible (voir specs.md pour le détail)
-- `ioc` — chargement/parse de la base CSV d'IOC (réseau + fallback local), `HashMap<String, Vec<String>>` (SPEC-F01). Les signatures évoluent vite : ne rien figer en dur, prévoir un fichier de config externe (`iocs.toml`) pour les chaînes/fichiers suspects du Threat Hunting (SPEC-F06/F07).
+- `ioc` — chargement/parse de la base CSV d'IOC (réseau + fallback local), `HashMap<String, Vec<String>>` (SPEC-F01).
+- `iocs.toml` (racine du dépôt) — schéma cible pour externaliser les chaînes/fichiers suspects du Threat Hunting (SPEC-F06/F07), reflète les valeurs par défaut de `hunt.rs`. **Le chargement de ce fichier par le binaire reste à implémenter** : `hunt.rs` utilise encore ses constantes en dur.
 - `walker` — parcours de fichiers via la crate `ignore` (SPEC-F02).
 - `discovery` — détection des projets npm/yarn (SPEC-F03).
 - `audit` — analyse des lockfiles existants + simulation `npm install --package-lock-only` (SPEC-F04).
