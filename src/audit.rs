@@ -83,6 +83,12 @@ struct InstalledPackageManifest {
 /// (`node_modules` imbriqués suite à un conflit de version).
 pub fn audit_installed_packages(db: &IocDatabase, project: &Project) -> Vec<Finding> {
     let node_modules = project.root.join("node_modules");
+    if !node_modules.is_dir() {
+        // Cas normal (pas une erreur) : le projet n'a simplement pas encore été
+        // installé. Éviter d'appeler le walker sur un chemin absent, qui
+        // journalise sinon un WARN d'erreur d'E/S trompeur pour ce cas courant.
+        return Vec::new();
+    }
     let progress = ProgressBar::hidden();
     crate::walker::walk(&node_modules, &progress)
         .filter(|entry| entry.file_name() == "package.json")

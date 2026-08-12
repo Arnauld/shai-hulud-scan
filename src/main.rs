@@ -7,7 +7,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
-const DEFAULT_FILE_DIRECTIVE: &str = "info,shai_hulud_guard=debug";
+const DEFAULT_FILE_DIRECTIVE: &str = "info,shai_hulud_guard=debug,ignore=debug";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -45,14 +45,20 @@ async fn main() -> anyhow::Result<()> {
 /// Initialise la journalisation `tracing` (SPEC-T04) :
 /// - **stderr** : toujours actif. Priorité de la directive de filtrage : `RUST_LOG`
 ///   (variable d'environnement) > `--log-console-directive` (explicite) > `--verbose`
-///   (DEBUG pour `shai_hulud_guard` uniquement si activé, INFO sinon — et pour les
-///   dépendances dans tous les cas, afin d'éviter le bruit interne de crates comme
-///   `ignore`).
+///   (DEBUG pour `shai_hulud_guard` **et** `ignore` — la crate de parcours de
+///   fichiers, SPEC-F02 — si activé, INFO sinon, pour les autres dépendances dans
+///   tous les cas afin d'éviter le bruit interne).
 /// - **`--log-file <path>`** : en plus de stderr (jamais à sa place), pour permettre
 ///   de suivre un scan en cours avec `tail -f` sans attendre la fin (le rapport
 ///   final, lui, n'est écrit qu'une fois le scan terminé). Toujours au niveau DEBUG
 ///   par défaut, indépendamment de `--verbose` et de `RUST_LOG` — remplaçable via
 ///   `--log-file-directive`.
+///
+/// `tracing_subscriber::registry().init()` installe automatiquement (feature
+/// `tracing-log`, activée par défaut) un pont depuis la façade `log` — utilisée en
+/// interne par `ignore` pour signaler, entre autres, les répertoires ignorés et
+/// pourquoi — vers `tracing` : ces diagnostics sont donc déjà capturés par les mêmes
+/// couches stderr/fichier, sans configuration supplémentaire de notre part.
 fn init_logging(
     verbose: bool,
     no_color: bool,
@@ -61,7 +67,7 @@ fn init_logging(
     log_file_directive: Option<&str>,
 ) -> anyhow::Result<()> {
     let default_console_directive = if verbose {
-        "info,shai_hulud_guard=debug"
+        "info,shai_hulud_guard=debug,ignore=debug"
     } else {
         "info"
     };
