@@ -82,6 +82,9 @@ pub enum ThreatCategory {
     SuspiciousWorkflow,
     SuspiciousCacheDir,
     LaunchAgent,
+    /// Marqueur C2 connu détecté dans le code source par le scan passif (SPEC-F05
+    /// pour le mécanisme, SPEC-F08 pour la liste de marqueurs).
+    KnownC2Marker,
 }
 
 /// Un signal de compromission détecté sur le disque.

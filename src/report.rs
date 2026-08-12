@@ -37,6 +37,10 @@ pub struct Report {
     /// Inventaire des scripts `preinstall`/`postinstall` rencontrés (SPEC-F08) — pas
     /// des menaces en soi, juste une liste pour inspection manuelle.
     pub install_scripts: Vec<InstallScript>,
+    /// Fichiers mentionnant une instruction d'installation npm/yarn directe
+    /// (SPEC-F05) — indice contextuel, souvent bénin (ex. un README), pas un
+    /// `ThreatSignal`.
+    pub install_command_mentions: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,6 +79,7 @@ impl Report {
             findings: findings.iter().map(FindingReport::from).collect(),
             threats: Vec::new(),
             install_scripts: Vec::new(),
+            install_command_mentions: Vec::new(),
         }
     }
 
@@ -88,6 +93,13 @@ impl Report {
     /// affiché uniquement au niveau `Debug` du rapport.
     pub fn with_install_scripts(mut self, install_scripts: Vec<InstallScript>) -> Self {
         self.install_scripts = install_scripts;
+        self
+    }
+
+    /// Attache les fichiers mentionnant une instruction d'installation directe
+    /// (SPEC-F05), affichés uniquement au niveau `Debug` du rapport.
+    pub fn with_install_command_mentions(mut self, mentions: Vec<PathBuf>) -> Self {
+        self.install_command_mentions = mentions;
         self
     }
 
@@ -219,6 +231,20 @@ impl Report {
                         script.hook,
                         script.command,
                         script.package_json.display()
+                    ));
+                }
+            }
+
+            if !self.install_command_mentions.is_empty() {
+                out.push_str(&format!(
+                    "\n{}\n",
+                    style("Fichiers mentionnant une installation npm/yarn directe :").bold()
+                ));
+                for path in &self.install_command_mentions {
+                    out.push_str(&format!(
+                        "  {} {}\n",
+                        style("[INFO]").cyan(),
+                        path.display()
                     ));
                 }
             }
@@ -396,5 +422,18 @@ mod tests {
         let debug_text = report.render_text(ReportLevel::Debug);
         assert!(debug_text.contains("node build.js"));
         assert!(debug_text.contains("[SCRIPT]"));
+    }
+
+    #[test]
+    fn install_command_mentions_are_shown_only_at_debug_level() {
+        let report = Report::from_findings(&[])
+            .with_install_command_mentions(vec![PathBuf::from("/proj/README.md")]);
+
+        let error_text = report.render_text(ReportLevel::Error);
+        assert!(!error_text.contains("README.md"));
+
+        let debug_text = report.render_text(ReportLevel::Debug);
+        assert!(debug_text.contains("README.md"));
+        assert!(debug_text.contains("[INFO]"));
     }
 }
