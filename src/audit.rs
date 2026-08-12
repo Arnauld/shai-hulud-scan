@@ -1,9 +1,9 @@
 //! Audit double-niveau des projets NPM/Yarn : lockfile existant + simulation (SPEC-F04).
 
+use indicatif::ProgressBar;
 use serde::Deserialize;
 
 use crate::discovery::Project;
-use crate::hunt::installed_package_manifests;
 use crate::ioc::IocDatabase;
 use crate::lockfile::{parse_npm_lock, parse_yarn_lock};
 
@@ -75,12 +75,17 @@ struct InstalledPackageManifest {
 /// Vérifie directement les paquets déjà installés dans `<project.root>/node_modules`
 /// par le nom et la version déclarés dans leur propre `package.json` — ce sont des
 /// paquets déjà résolus sur disque, pas des racines de projet : inutile de générer
-/// ou simuler un lockfile pour eux (amélioration de SPEC-F04, niveau 1).
+/// ou simuler un lockfile pour eux (amélioration de SPEC-F04, niveau 1). Parcourt
+/// `node_modules` à toute profondeur (contrairement au scan de hooks O(1) de
+/// SPEC-F06) afin de couvrir aussi les dépendances transitives non hissées
+/// (`node_modules` imbriqués suite à un conflit de version).
 pub fn audit_installed_packages(db: &IocDatabase, project: &Project) -> Vec<Finding> {
-    installed_package_manifests(&project.root)
-        .iter()
-        .filter_map(|manifest_path| {
-            let content = std::fs::read_to_string(manifest_path).ok()?;
+    let node_modules = project.root.join("node_modules");
+    let progress = ProgressBar::hidden();
+    crate::walker::walk(&node_modules, &progress)
+        .filter(|entry| entry.file_name() == "package.json")
+        .filter_map(|entry| {
+            let content = std::fs::read_to_string(entry.path()).ok()?;
             let manifest: InstalledPackageManifest = serde_json::from_str(&content).ok()?;
             Some(check_dependency(db, &manifest.name?, &manifest.version?))
         })
@@ -173,5 +178,37 @@ mod tests {
         assert!(findings
             .iter()
             .any(|f| f.package == "safe-pkg" && f.status == Status::Sain));
+    }
+
+    #[test]
+    fn audits_deeply_nested_transitive_dependencies() {
+        let db = IocDatabase::from_csv("ecosystem,package,versions\nnpm,evil-pkg,1.0.0\n").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        // node_modules/foo/node_modules/evil-pkg : dépendance transitive non hissée,
+        // typiquement due à un conflit de version avec la copie hissée à la racine.
+        let nested_dir = dir
+            .path()
+            .join("node_modules")
+            .join("foo")
+            .join("node_modules")
+            .join("evil-pkg");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(
+            nested_dir.join("package.json"),
+            r#"{"name":"evil-pkg","version":"1.0.0"}"#,
+        )
+        .unwrap();
+
+        let project = Project {
+            root: dir.path().to_path_buf(),
+            has_npm_lock: false,
+            has_yarn_lock: false,
+        };
+
+        let findings = audit_installed_packages(&db, &project);
+        assert!(findings
+            .iter()
+            .any(|f| f.package == "evil-pkg" && f.status == Status::Vulnerable));
     }
 }

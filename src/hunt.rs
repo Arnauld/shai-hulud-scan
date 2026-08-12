@@ -123,11 +123,13 @@ fn scan_cache_dir(root: &Path) -> Option<ThreatSignal> {
     })
 }
 
-/// Énumère les `package.json` de chaque paquet installé dans
-/// `<project_root>/node_modules` (y compris les paquets scopés `@scope/*`), sans
-/// parcours complet du disque (SPEC-F06, O(1) par projet). Réutilisé par `audit`
-/// pour vérifier les paquets installés sans avoir besoin de lockfile (SPEC-F04).
-pub fn installed_package_manifests(project_root: &Path) -> Vec<PathBuf> {
+/// Énumère les `package.json` du premier niveau de `<project_root>/node_modules`
+/// (y compris les paquets scopés `@scope/*`), sans parcours complet du disque
+/// (SPEC-F06, O(1) par projet). Volontairement non récursif : suffisant pour la
+/// détection de hooks malveillants (les paquets malveillants ciblent leurs propres
+/// hooks, jamais ceux d'une dépendance transitive imbriquée). Pour une vérification
+/// nom/version à toute profondeur, voir `audit::audit_installed_packages`.
+fn installed_package_manifests(project_root: &Path) -> Vec<PathBuf> {
     let mut manifests = Vec::new();
     let Ok(entries) = std::fs::read_dir(project_root.join("node_modules")) else {
         return manifests;
