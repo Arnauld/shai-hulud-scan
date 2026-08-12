@@ -4,11 +4,13 @@ name: release
 # Linux musl, binaire universel macOS (Intel + Apple Silicon), .exe Windows autonome.
 # Chaque cible est construite sur son runner natif — la manière la plus fiable
 # d'obtenir des binaires cross-plateforme corrects.
+#
+# Déclenché sur CHAQUE push (branche ou tag) + manuellement (workflow_dispatch).
+# La publication d'une GitHub Release avec les binaires attachés (job
+# publish-release) ne se déclenche elle que sur un push de tag `vX.Y.Z`.
 
 on:
   push:
-    tags:
-      - "v*.*.*"
   workflow_dispatch: {}
 
 env:
