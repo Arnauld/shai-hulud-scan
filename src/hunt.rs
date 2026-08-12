@@ -123,12 +123,14 @@ fn scan_cache_dir(root: &Path) -> Option<ThreatSignal> {
     })
 }
 
-/// Vérifie les hooks de `<pkg_dir>/node_modules/*/package.json` (et des paquets
-/// scopés `@scope/*`) sans parcours complet du disque (SPEC-F06, O(1) par projet).
-fn scan_node_modules_hooks(project_root: &Path) -> Vec<ThreatSignal> {
-    let mut signals = Vec::new();
+/// Énumère les `package.json` de chaque paquet installé dans
+/// `<project_root>/node_modules` (y compris les paquets scopés `@scope/*`), sans
+/// parcours complet du disque (SPEC-F06, O(1) par projet). Réutilisé par `audit`
+/// pour vérifier les paquets installés sans avoir besoin de lockfile (SPEC-F04).
+pub fn installed_package_manifests(project_root: &Path) -> Vec<PathBuf> {
+    let mut manifests = Vec::new();
     let Ok(entries) = std::fs::read_dir(project_root.join("node_modules")) else {
-        return signals;
+        return manifests;
     };
 
     for entry in entries.flatten() {
@@ -140,14 +142,25 @@ fn scan_node_modules_hooks(project_root: &Path) -> Vec<ThreatSignal> {
             let Ok(scoped_entries) = std::fs::read_dir(&path) else {
                 continue;
             };
-            for scoped_entry in scoped_entries.flatten() {
-                check_hook_file(&scoped_entry.path().join("package.json"), &mut signals);
-            }
+            manifests.extend(
+                scoped_entries
+                    .flatten()
+                    .map(|scoped_entry| scoped_entry.path().join("package.json")),
+            );
         } else {
-            check_hook_file(&path.join("package.json"), &mut signals);
+            manifests.push(path.join("package.json"));
         }
     }
 
+    manifests
+}
+
+/// Vérifie les hooks de `<pkg_dir>/node_modules/*/package.json` (SPEC-F06).
+fn scan_node_modules_hooks(project_root: &Path) -> Vec<ThreatSignal> {
+    let mut signals = Vec::new();
+    for manifest in installed_package_manifests(project_root) {
+        check_hook_file(&manifest, &mut signals);
+    }
     signals
 }
 

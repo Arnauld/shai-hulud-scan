@@ -36,7 +36,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
 
     let mut findings: Vec<_> = projects
         .iter()
-        .flat_map(|project| audit::audit_project(&db, project))
+        .flat_map(|project| {
+            let mut project_findings = audit::audit_project(&db, project);
+            project_findings.extend(audit::audit_installed_packages(&db, project));
+            project_findings
+        })
         .collect();
 
     let threats = hunt::hunt(&cli.path, &projects);
