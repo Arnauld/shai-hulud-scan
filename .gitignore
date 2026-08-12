@@ -3,3 +3,4 @@
 *.pdb
 .DS_Store
 *.log
+/working/

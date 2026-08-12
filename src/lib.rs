@@ -23,12 +23,16 @@ use report::Report;
 
 /// Orchestre une passe d'audit complète sur `cli.path` et retourne le rapport final :
 /// chargement de la base IOC réseau + fallback local (SPEC-F01), audit des lockfiles
-/// existants (SPEC-F04 niveau 1), simulation `npm install` (SPEC-F04 niveau 2,
+/// existants (SPEC-F04 niveau 1), simulation `npm install` (SPEC-F04 niveau 2, dans
+/// une copie isolée sous `working/` — jamais dans le projet original — avec des
 /// processus concurrents bornés par un sémaphore dimensionné par `cli.workers`,
 /// SPEC-T01) et recherche active de signaux malveillants sur le disque (SPEC-F06/F07).
 /// Le parcours de fichiers et la simulation npm affichent une barre de progression
 /// `indicatif`, désactivable via `--no-color` (SPEC-T02).
 pub async fn run(cli: Cli) -> anyhow::Result<Report> {
+    let working_dir = std::env::current_dir()?.join(simulate::WORKING_DIRNAME);
+    tokio::fs::create_dir_all(&working_dir).await?;
+
     let db = IocDatabase::load(cli.database.as_deref(), cli.offline).await?;
 
     info!(path = %cli.path.display(), "lancement de l'analyse");
@@ -64,8 +68,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     for project in projects {
         let db = Arc::clone(&db);
         let semaphore = Arc::clone(&semaphore);
+        let working_dir = working_dir.clone();
         simulations.spawn(async move {
-            simulate::simulate_install(&project, &db, &semaphore, npm_timeout).await
+            simulate::simulate_install(&project, &db, &semaphore, &working_dir, npm_timeout).await
         });
     }
 

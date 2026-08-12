@@ -8,3 +8,8 @@
 # muter les fixtures (npm réécrit un yarn.lock existant en effet de bord) ou bloquer
 # le scan (résolution réseau lente/bloquée sur un des paquets réels référencés).
 /test-data/
+
+# working/ est le répertoire de travail créé par shai-hulud-guard lui-même (SPEC-F04
+# niveau 2) pour isoler les simulations npm install. Un résidu d'un run interrompu
+# contiendrait un package.json copié qui serait sinon pris pour un vrai projet.
+/working/

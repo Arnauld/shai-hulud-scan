@@ -67,30 +67,45 @@ Pour chaque dossier de projet Node.js identifié :
     *   *NPM (JSON) :* Parser le fichier JSON et extraire les dépendances transitives des champs `packages` (formats v2/v3) et `dependencies` (format v1).
     *   *Yarn (Lockfile format) :* Écrire un décodeur linéaire efficace en Rust pour parser la syntaxe du `yarn.lock` (Classic v1 et Berry v2+) afin d'extraire les paquets et leurs versions résolues.
     *   Vérifier chaque dépendance par rapport à la base d'IOC et classifier : `VULNÉRABLE` (si version compromise détectée) ou `SAIN`.
-*   **Niveau 2 : Évaluation potentielle (Simulation) :**
-    *   Sauvegarder temporairement **tout fichier de lock d'origine présent** (`package-lock.json`
-        **et** `yarn.lock` s'ils existent) en `.orig` avant de lancer npm — constaté en pratique :
-        `npm install`, même en `--package-lock-only`, peut réécrire un `yarn.lock` déjà présent en
-        effet de bord, pas seulement générer/modifier `package-lock.json`. Ne protéger que
-        `package-lock.json` est insuffisant et peut corrompre silencieusement un dépôt scanné.
-    *   Lancer la commande de simulation NPM de manière isolée et sécurisée :
+*   **Niveau 2 : Évaluation potentielle (Simulation), dans un répertoire de travail isolé :**
+    *   **Ne jamais exécuter `npm install` dans le répertoire du projet lui-même.** Constaté en
+        pratique : même en `--package-lock-only`, `npm` peut réécrire un `yarn.lock` déjà présent
+        en effet de bord — une stratégie de sauvegarde/restauration `.orig` dans le répertoire
+        d'origine reste donc intrinsèquement risquée (fenêtre de mutation, fichiers oubliés en cas
+        de crash). La simulation doit s'exécuter dans une **copie isolée**, jamais dans l'arbre du
+        projet scanné.
+    *   **Répertoire de travail :** Au démarrage de l'outil, créer (si absent — ne jamais purger un
+        répertoire préexistant à l'aveugle) un dossier `working/` dans le répertoire d'exécution
+        courant (même convention que `malicious-packages.csv`, SPEC-F01).
+    *   **Par simulation :** Créer sous `working/` un sous-répertoire temporaire dédié, nommé par le
+        **SHA1 du chemin du fichier `package.json`** du projet (déterministe, sans collision entre
+        projets). Le recréer proprement (purge + création) à chaque exécution pour garantir un état
+        vierge, indépendamment de tout résidu d'un run précédent interrompu.
+    *   **Copier uniquement les fichiers nécessaires à la génération** (`package.json` du projet)
+        dans ce sous-répertoire — jamais le `package-lock.json`/`yarn.lock` d'origine, ni aucun
+        autre fichier du projet.
+    *   Lancer la commande de simulation NPM dans ce sous-répertoire isolé :
         ```bash
         npm install --package-lock-only --include=dev --ignore-scripts --audit=false --fund=false --legacy-peer-deps --no-workspaces
         ```
         *   **Flag Critique `--legacy-peer-deps` :** Indispensable pour contourner les erreurs de résolution de pairs (ERESOLVE) fréquentes sur les anciens dépôts, évitant ainsi un blocage de génération.
-        *   **Flag Critique `--no-workspaces` :** Indispensable pour forcer `npm` à écrire le fichier de verrouillage localement dans le répertoire du projet ciblé, évitant la redirection automatique vers la racine des monorepos de workspaces.
+        *   **Flag Critique `--no-workspaces` :** Évite toute redirection vers un éventuel monorepo de workspaces au-dessus du répertoire ciblé (redondant avec l'isolation mais gardé par prudence).
     *   **Délai maximal (`--npm-timeout`, défaut 120s) :** La commande npm doit être bornée par un
         timeout. Sans cela, un seul projet dont la résolution réseau est lente, bloquée (registre
         privé, proxy, authentification manquante) ou qui boucle indéfiniment **bloque la totalité
         du scan** — y compris l'écriture du rapport final (`--report-file`/`--json`/console), qui
         n'a lieu qu'une fois toutes les simulations terminées. En cas de dépassement, abandonner ce
-        projet (avertissement), restaurer son état d'origine, et poursuivre le scan des autres
-        projets.
-    *   Analyser le fichier de verrouillage potentiel nouvellement généré.
-    *   Restaurer proprement l'état d'origine du répertoire pour **chaque** fichier sauvegardé
-        (supprimer le lock temporaire ou restaurer le fichier `.orig`), y compris en cas d'échec ou
-        de timeout.
+        projet (avertissement) et poursuivre le scan des autres projets.
+    *   Analyser le `package-lock.json` potentiel généré **dans le sous-répertoire de travail**.
+    *   Supprimer intégralement le sous-répertoire temporaire une fois l'analyse terminée, y compris
+        en cas d'échec ou de timeout — le répertoire du projet original n'est, à aucun moment de ce
+        niveau 2, ni modifié ni même ouvert en écriture.
     *   Enregistrer toutes les détections en mémoire de manière groupée.
+
+> ⚠️ **`working/` ne doit jamais être traité comme du contenu à auditer** par le moteur de parcours
+> (SPEC-F02), pour les mêmes raisons que `test-data/` ci-dessous : un résidu d'un run précédent
+> interrompu (process tué en cours de simulation) contient un `package.json` copié qui serait sinon
+> pris pour un vrai projet lors d'un run ultérieur.
 
 > ⚠️ **Le workspace de développement de l'outil lui-même (`test-data/`, fixtures de test) ne doit
 > jamais être traité comme un ensemble de projets à auditer** lorsque l'outil est lancé sur son
