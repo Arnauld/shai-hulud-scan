@@ -1,0 +1,9 @@
+# Liaison statique pour des binaires réellement autonomes (SPEC-T03).
+# - musl : libc statique, portabilité totale sans dépendance glibc.
+# - windows-msvc : CRT statique, pas besoin du redistribuable Visual C++ sur la cible.
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -1,0 +1,81 @@
+name: release
+
+# Compilation multi-plateforme de shai-hulud-guard (SPEC-T03) : binaire statique
+# Linux musl, binaire universel macOS (Intel + Apple Silicon), .exe Windows autonome.
+# Chaque cible est construite sur son runner natif — la manière la plus fiable
+# d'obtenir des binaires cross-plateforme corrects.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: shai-hulud-guard
+
+jobs:
+  linux-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer le toolchain musl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-linux-x86_64-musl
+          path: target/x86_64-unknown-linux-musl/release/${{ env.BIN_NAME }}
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: cargo build --release --target x86_64-pc-windows-msvc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-windows-x86_64
+          path: target/x86_64-pc-windows-msvc/release/${{ env.BIN_NAME }}.exe
+
+  macos-universal:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - run: ./scripts/build-macos-universal.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-macos-universal
+          path: target/universal/release/${{ env.BIN_NAME }}
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-musl, windows, macos-universal]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Renommer les binaires par plateforme
+        run: |
+          mkdir -p dist
+          cp artifacts/${{ env.BIN_NAME }}-linux-x86_64-musl/${{ env.BIN_NAME }} dist/${{ env.BIN_NAME }}-linux-x86_64-musl
+          cp artifacts/${{ env.BIN_NAME }}-windows-x86_64/${{ env.BIN_NAME }}.exe dist/${{ env.BIN_NAME }}-windows-x86_64.exe
+          cp artifacts/${{ env.BIN_NAME }}-macos-universal/${{ env.BIN_NAME }} dist/${{ env.BIN_NAME }}-macos-universal
+          chmod +x dist/*
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

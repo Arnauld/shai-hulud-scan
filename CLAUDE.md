@@ -6,7 +6,7 @@
 **La source de vérité fonctionnelle est `specs.md`.** Toujours vérifier ce fichier avant d'implémenter une fonctionnalité ; le mettre à jour si le comportement implémenté diverge (nouvelle variante du ver, nouveau flag CLI, etc.).
 
 ## État du dépôt
-Actuellement seule la spec existe, aucun code Rust n'a encore été généré. La structure Cargo (`Cargo.toml`, `src/`) reste à créer conformément à SPEC-T01/T02/T03.
+Toutes les specs fonctionnelles (SPEC-F01 à F07) et techniques (SPEC-T01 à T03) sont implémentées : chargement IOC réseau + fallback + `--offline`, parcours `ignore`, découverte npm/yarn, audit lockfiles + simulation `npm install`, scan regex, moteur de Threat Hunting, sortie console colorée/JSON/rapport-fichier avec barres `indicatif`, et packaging cross-plateforme (voir ci-dessous).
 
 ## Architecture cible (voir specs.md pour le détail)
 - `ioc` — chargement/parse de la base CSV d'IOC (réseau + fallback local), `HashMap<String, Vec<String>>` (SPEC-F01). Les signatures évoluent vite : ne rien figer en dur, prévoir un fichier de config externe (`iocs.toml`) pour les chaînes/fichiers suspects du Threat Hunting (SPEC-F06/F07).
@@ -19,7 +19,7 @@ Actuellement seule la spec existe, aucun code Rust n'a encore été généré. L
 - `cli` — point d'entrée, orchestration `tokio` + sémaphore de concurrence (SPEC-T01).
 
 ## Crates de référence imposées par la spec
-`tokio` (async/parallélisme), `ignore` (parcours fichiers, moteur ripgrep), `regex`, `indicatif` (progress bars), `clap` (CLI, à confirmer), `serde`/`serde_json` (JSON), un client HTTP simple (ex. `reqwest` ou `ureq`) pour le téléchargement de la base IOC.
+`tokio` (async/parallélisme), `ignore` (parcours fichiers, moteur ripgrep), `regex`, `indicatif` + `console` (progress bars, ANSI), `clap` (CLI, derive), `serde`/`serde_json`/`csv` (JSON, parsing IOC), `reqwest` (rustls, téléchargement IOC), `anyhow`/`thiserror` (erreurs), `dirs` (chemins `~/Library/LaunchAgents`).
 
 ## Commandes
 ```bash
@@ -28,7 +28,19 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
-Cibles de cross-compilation (SPEC-T03) : `x86_64-unknown-linux-musl`, macOS universal (x86_64 + aarch64), `x86_64-pc-windows-msvc`.
+
+## Packaging cross-plateforme (SPEC-T03)
+Binaire statique et autonome sur 3 cibles, chacune liée statiquement via `.cargo/config.toml`
+(`target-feature=+crt-static`, pas de dépendance glibc/CRT sur la machine cible) :
+- **Linux** : `cargo build --release --target x86_64-unknown-linux-musl` (nécessite `musl-tools`).
+- **macOS universal** (Intel + Apple Silicon) : `./scripts/build-macos-universal.sh` — build les
+  deux cibles natives (`x86_64-apple-darwin`, `aarch64-apple-darwin`) et les fusionne via `lipo`
+  dans `target/universal/release/shai-hulud-guard`.
+- **Windows** : `cargo build --release --target x86_64-pc-windows-msvc` (nécessite le toolchain MSVC).
+
+Le musl et le MSVC ne sont pas cross-compilables depuis ce Mac (ni `musl-gcc` ni toolchain MSVC
+disponibles) : `.github/workflows/release.yml` construit les 3 cibles sur leur runner natif
+(ubuntu/windows/macos) à chaque tag `v*.*.*`, et publie les binaires sur la release GitHub.
 
 ## Conventions de code
 - Typage fort, pas de `unwrap()`/`expect()` hors tests — remonter les erreurs via `Result` (`thiserror`/`anyhow` à choisir et documenter ici une fois tranché).
