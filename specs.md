@@ -182,6 +182,14 @@ L'outil doit intégrer une journalisation structurée, distincte des barres de p
     *   `DEBUG` : détail fin de chaque vérification (projet découvert, dépendance auditée, signal de Threat Hunting détecté, sortie brute des processus `npm install`).
 *   **Mode Verbeux (`--verbose` / `-v`) :** Active le niveau `DEBUG` (uniquement pour ce binaire — les dépendances comme `ignore` restent à `INFO` pour éviter le bruit) et **journalise l'ensemble des fichiers analysés** lors du parcours (SPEC-F02), un log par fichier visité avec son chemin complet (ex. `fichier analysé : <path>`). Ce log par fichier reste désactivé par défaut (silencieux au niveau `INFO`) pour éviter un volume de sortie excessif sur de grandes arborescences.
 *   **Isolation stricte console/logs :** Les processus externes lancés par l'outil (`npm install` en simulation, SPEC-F04) ne doivent **jamais** hériter des flux stdout/stderr du binaire — leur sortie est capturée et journalisée en `DEBUG`, jamais affichée directement sur la console.
+*   **Fichier de log (`--log-file <path>`) :** En plus de stderr (jamais à sa place), écrire
+    les logs dans le fichier indiqué, **toujours au niveau `DEBUG`** pour ce binaire —
+    indépendamment de `--verbose`, qui ne contrôle que le niveau affiché sur la console. Objectif
+    explicite : pouvoir suivre l'avancement d'un scan long (`tail -f <path>`) sans devoir choisir
+    entre une console lisible et le détail complet, et sans attendre la fin du scan — contrairement
+    au rapport final (`--report-file`/`--json`/console), qui n'est écrit qu'une seule fois, une fois
+    **toutes** les simulations terminées, et ne doit donc jamais être confondu avec un fichier de
+    log à surveiller en direct.
 
 ### SPEC-T05 - Niveau de verbosité du rapport
 Le rapport final (console et `--report-file`) doit exposer un niveau de détail configurable, **indépendant** du niveau de log `--verbose` (SPEC-T04) : par défaut, un utilisateur qui lance un scan de sécurité veut voir le résultat complet sans avoir à activer un mode diagnostique séparé.
