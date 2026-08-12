@@ -65,6 +65,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         .collect();
 
     let threats = hunt::hunt(&cli.path, &projects);
+    let install_scripts: Vec<_> = projects
+        .iter()
+        .flat_map(|project| hunt::inventory_install_scripts(&project.root))
+        .collect();
 
     let project_count = projects.len();
     let db = Arc::new(db);
@@ -119,6 +123,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     );
     Ok(Report::from_findings(&findings)
         .with_threats(threats)
+        .with_install_scripts(install_scripts)
         .with_project_count(project_count))
 }
 

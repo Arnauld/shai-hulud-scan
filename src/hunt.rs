@@ -263,6 +263,61 @@ fn scan_node_modules_hooks(project_root: &Path) -> Vec<ThreatSignal> {
     signals
 }
 
+/// Type de hook d'installation npm/yarn (SPEC-F08).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum InstallHook {
+    Preinstall,
+    Postinstall,
+}
+
+/// Un script `preinstall`/`postinstall` déclaré dans un `package.json`, à des fins
+/// d'inventaire et d'inspection manuelle (SPEC-F08). **N'est pas en soi un signal de
+/// compromission** — de nombreux paquets légitimes utilisent ces hooks (compilation
+/// native, husky...) — juste une liste exhaustive pour revue humaine, à la manière
+/// d'un contrôle "12 trouvés, tous inspectés, tous bénins".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstallScript {
+    pub package_json: PathBuf,
+    pub hook: InstallHook,
+    pub command: String,
+}
+
+/// Inventorie les scripts `preinstall`/`postinstall` du `package.json` du projet et
+/// de ses dépendances directes (`node_modules` premier niveau, même portée O(1) que
+/// `scan_node_modules_hooks` — cohérent avec l'objectif d'inspection humaine plutôt
+/// qu'un audit exhaustif de l'arbre transitif complet).
+pub fn inventory_install_scripts(project_root: &Path) -> Vec<InstallScript> {
+    let mut scripts = extract_install_scripts(&project_root.join("package.json"));
+    for manifest in installed_package_manifests(project_root) {
+        scripts.extend(extract_install_scripts(&manifest));
+    }
+    scripts
+}
+
+fn extract_install_scripts(package_json: &Path) -> Vec<InstallScript> {
+    let Ok(content) = std::fs::read_to_string(package_json) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Vec::new();
+    };
+
+    [
+        ("/scripts/preinstall", InstallHook::Preinstall),
+        ("/scripts/postinstall", InstallHook::Postinstall),
+    ]
+    .into_iter()
+    .filter_map(|(pointer, hook)| {
+        let command = value.pointer(pointer)?.as_str()?.to_string();
+        Some(InstallScript {
+            package_json: package_json.to_path_buf(),
+            hook,
+            command,
+        })
+    })
+    .collect()
+}
+
 fn check_hook_file(package_json: &Path, signals: &mut Vec<ThreatSignal>) {
     let Ok(content) = std::fs::read_to_string(package_json) else {
         return;
@@ -523,5 +578,44 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn inventories_preinstall_and_postinstall_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"demo","scripts":{"preinstall":"node build.js","test":"jest"}}"#,
+        )
+        .unwrap();
+
+        let pkg_dir = dir.path().join("node_modules").join("native-thing");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join("package.json"),
+            r#"{"name":"native-thing","scripts":{"postinstall":"node-gyp rebuild"}}"#,
+        )
+        .unwrap();
+
+        let clean_dir = dir.path().join("node_modules").join("no-scripts");
+        std::fs::create_dir_all(&clean_dir).unwrap();
+        std::fs::write(clean_dir.join("package.json"), r#"{"name":"no-scripts"}"#).unwrap();
+
+        let scripts = inventory_install_scripts(dir.path());
+        assert_eq!(scripts.len(), 2);
+        assert!(scripts
+            .iter()
+            .any(|s| s.hook == InstallHook::Preinstall && s.command == "node build.js"));
+        assert!(scripts
+            .iter()
+            .any(|s| s.hook == InstallHook::Postinstall && s.command == "node-gyp rebuild"));
+    }
+
+    #[test]
+    fn install_script_inventory_is_empty_when_no_scripts_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"demo"}"#).unwrap();
+
+        assert!(inventory_install_scripts(dir.path()).is_empty());
     }
 }

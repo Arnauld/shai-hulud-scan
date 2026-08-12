@@ -8,7 +8,7 @@ use console::style;
 use serde::Serialize;
 
 use crate::audit::Finding;
-use crate::hunt::ThreatSignal;
+use crate::hunt::{InstallScript, ThreatSignal};
 use crate::ioc::CompromiseStatus;
 
 /// Niveau de détail du rapport (`--report-level`), indépendant du niveau de log
@@ -34,6 +34,9 @@ pub struct Report {
     pub project_count: usize,
     pub findings: Vec<FindingReport>,
     pub threats: Vec<ThreatSignal>,
+    /// Inventaire des scripts `preinstall`/`postinstall` rencontrés (SPEC-F08) — pas
+    /// des menaces en soi, juste une liste pour inspection manuelle.
+    pub install_scripts: Vec<InstallScript>,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,12 +74,20 @@ impl Report {
             project_count: 0,
             findings: findings.iter().map(FindingReport::from).collect(),
             threats: Vec::new(),
+            install_scripts: Vec::new(),
         }
     }
 
     /// Attache les signaux de Threat Hunting (SPEC-F06/F07) au rapport.
     pub fn with_threats(mut self, threats: Vec<ThreatSignal>) -> Self {
         self.threats = threats;
+        self
+    }
+
+    /// Attache l'inventaire des scripts `preinstall`/`postinstall` (SPEC-F08),
+    /// affiché uniquement au niveau `Debug` du rapport.
+    pub fn with_install_scripts(mut self, install_scripts: Vec<InstallScript>) -> Self {
+        self.install_scripts = install_scripts;
         self
     }
 
@@ -192,6 +203,22 @@ impl Report {
                         style("[SAIN]").green(),
                         finding.package,
                         finding.version
+                    ));
+                }
+            }
+
+            if !self.install_scripts.is_empty() {
+                out.push_str(&format!(
+                    "\n{}\n",
+                    style("Scripts preinstall/postinstall trouvés (à inspecter) :").bold()
+                ));
+                for script in &self.install_scripts {
+                    out.push_str(&format!(
+                        "  {} {:?} : {} ({})\n",
+                        style("[SCRIPT]").cyan(),
+                        script.hook,
+                        script.command,
+                        script.package_json.display()
                     ));
                 }
             }
@@ -353,5 +380,21 @@ mod tests {
     #[test]
     fn default_report_level_is_debug() {
         assert_eq!(ReportLevel::default(), ReportLevel::Debug);
+    }
+
+    #[test]
+    fn install_scripts_are_shown_only_at_debug_level() {
+        let report = Report::from_findings(&[]).with_install_scripts(vec![InstallScript {
+            package_json: PathBuf::from("/proj/package.json"),
+            hook: crate::hunt::InstallHook::Preinstall,
+            command: "node build.js".to_string(),
+        }]);
+
+        let error_text = report.render_text(ReportLevel::Error);
+        assert!(!error_text.contains("node build.js"));
+
+        let debug_text = report.render_text(ReportLevel::Debug);
+        assert!(debug_text.contains("node build.js"));
+        assert!(debug_text.contains("[SCRIPT]"));
     }
 }
