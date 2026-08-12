@@ -6,6 +6,7 @@
 //! reste intrinsèquement risquée. Le nombre de processus npm concurrents est borné
 //! par un sémaphore (SPEC-T01) pour éviter de saturer le disque/les E/S.
 
+use std::ffi::{OsStr, OsString};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -13,7 +14,7 @@ use std::time::Duration;
 use sha1::{Digest, Sha1};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::audit::{check_dependency, Finding};
 use crate::discovery::Project;
@@ -36,6 +37,62 @@ const NPM_ARGS: &[&str] = &[
 /// simulé — jamais le projet original.
 pub const WORKING_DIRNAME: &str = "working";
 
+/// Nom de commande npm par défaut, utilisé si `--npm-path` n'est pas fourni.
+const DEFAULT_NPM_COMMAND: &str = "npm";
+
+/// Résout la commande npm à utiliser : `npm_path` (`--npm-path`) s'il est fourni,
+/// sinon `npm` recherché dans le PATH.
+pub fn resolve_npm_command(npm_path: Option<&Path>) -> OsString {
+    npm_path
+        .map(|path| path.as_os_str().to_owned())
+        .unwrap_or_else(|| OsString::from(DEFAULT_NPM_COMMAND))
+}
+
+/// Vérifie au démarrage que la commande npm résolue est utilisable, en tentant
+/// `<npm> --version` (borné par un court timeout pour ne jamais bloquer le
+/// démarrage). Toujours journalisé en `INFO`, succès ou échec (SPEC-F04) : si npm
+/// est indisponible, la simulation d'installation (niveau 2) est entièrement
+/// ignorée pour le scan — la vérification des `package-lock.json` générés ne peut
+/// pas avoir lieu.
+pub async fn check_npm_available(npm_command: &OsStr) -> bool {
+    let probe = Command::new(npm_command).arg("--version").output();
+
+    match tokio::time::timeout(Duration::from_secs(10), probe).await {
+        Ok(Ok(output)) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            info!(
+                npm = %npm_command.to_string_lossy(),
+                version,
+                "npm disponible : la simulation d'installation (SPEC-F04 niveau 2) sera exécutée"
+            );
+            true
+        }
+        Ok(Ok(output)) => {
+            info!(
+                npm = %npm_command.to_string_lossy(),
+                status = %output.status,
+                "npm indisponible (code de sortie non nul pour --version) : la vérification des package-lock.json générés ne pourra avoir lieu et sera ignorée"
+            );
+            false
+        }
+        Ok(Err(err)) => {
+            info!(
+                npm = %npm_command.to_string_lossy(),
+                error = %err,
+                "npm introuvable : la vérification des package-lock.json générés ne pourra avoir lieu et sera ignorée"
+            );
+            false
+        }
+        Err(_) => {
+            info!(
+                npm = %npm_command.to_string_lossy(),
+                "npm --version n'a pas répondu à temps : la vérification des package-lock.json générés ne pourra avoir lieu et sera ignorée"
+            );
+            false
+        }
+    }
+}
+
 /// Sous-répertoire de travail dédié à un projet, nommé par le SHA1 du chemin de son
 /// `package.json` (déterministe, sans collision entre projets).
 fn sim_dir_for(working_dir: &Path, project_root: &Path) -> PathBuf {
@@ -53,21 +110,24 @@ fn sim_dir_for(working_dir: &Path, project_root: &Path) -> PathBuf {
 /// Simule `npm install` pour `project` dans une copie isolée sous `working_dir` et
 /// retourne les dépendances qui seraient résolues aujourd'hui, vérifiées contre la
 /// base IOC. Le répertoire du projet original n'est à aucun moment ouvert en écriture.
+/// `npm_command` est la commande résolue par [`resolve_npm_command`].
 pub async fn simulate_install(
     project: &Project,
     db: &IocDatabase,
     semaphore: &Semaphore,
     working_dir: &Path,
     npm_timeout: Duration,
+    npm_command: &OsStr,
 ) -> anyhow::Result<Vec<Finding>> {
     let sim_dir = sim_dir_for(working_dir, &project.root);
+    let npm_command = npm_command.to_owned();
     run_simulation(
         project,
         db,
         semaphore,
         &sim_dir,
         npm_timeout,
-        run_npm_install,
+        move |sim_dir| run_npm_install(sim_dir, npm_command),
     )
     .await
 }
@@ -75,8 +135,8 @@ pub async fn simulate_install(
 /// Lance `npm install` avec stdout/stderr capturés (jamais hérités du process
 /// parent) : la sortie de npm ne doit jamais fuiter sur la console de
 /// shai-hulud-guard, elle est journalisée en DEBUG pour le diagnostic (SPEC-T04).
-async fn run_npm_install(sim_dir: PathBuf) -> std::io::Result<()> {
-    let output = Command::new("npm")
+async fn run_npm_install(sim_dir: PathBuf, npm_command: OsString) -> std::io::Result<()> {
+    let output = Command::new(&npm_command)
         .args(NPM_ARGS)
         .current_dir(&sim_dir)
         .output()
@@ -199,6 +259,24 @@ mod tests {
             has_npm_lock: false,
             has_yarn_lock: false,
         }
+    }
+
+    #[test]
+    fn resolve_npm_command_defaults_to_npm_in_path() {
+        assert_eq!(resolve_npm_command(None), OsString::from("npm"));
+    }
+
+    #[test]
+    fn resolve_npm_command_uses_the_explicit_path_when_given() {
+        let path = Path::new("/usr/local/bin/npm");
+        assert_eq!(resolve_npm_command(Some(path)), OsString::from(path));
+    }
+
+    #[tokio::test]
+    async fn check_npm_available_returns_false_for_a_nonexistent_binary() {
+        let available =
+            check_npm_available(OsStr::new("this-binary-definitely-does-not-exist-xyz")).await;
+        assert!(!available);
     }
 
     #[test]

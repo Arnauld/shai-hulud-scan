@@ -22,16 +22,23 @@ use ioc::IocDatabase;
 use report::Report;
 
 /// Orchestre une passe d'audit complète sur `cli.path` et retourne le rapport final :
-/// chargement de la base IOC réseau + fallback local (SPEC-F01), audit des lockfiles
-/// existants (SPEC-F04 niveau 1), simulation `npm install` (SPEC-F04 niveau 2, dans
-/// une copie isolée sous `working/` — jamais dans le projet original — avec des
-/// processus concurrents bornés par un sémaphore dimensionné par `cli.workers`,
-/// SPEC-T01) et recherche active de signaux malveillants sur le disque (SPEC-F06/F07).
-/// Le parcours de fichiers et la simulation npm affichent une barre de progression
-/// `indicatif`, désactivable via `--no-color` (SPEC-T02).
+/// vérification de la disponibilité de npm (journalisée en INFO, `--npm-path` pour la
+/// forcer), chargement de la base IOC réseau + fallback local (SPEC-F01), audit des
+/// lockfiles existants (SPEC-F04 niveau 1), simulation `npm install` (SPEC-F04
+/// niveau 2, dans une copie isolée sous `working/` — jamais dans le projet original —
+/// entièrement ignorée si npm est indisponible, avec des processus concurrents
+/// bornés par un sémaphore dimensionné par `cli.workers`, SPEC-T01) et recherche
+/// active de signaux malveillants sur le disque (SPEC-F06/F07). Le parcours de
+/// fichiers et la simulation npm affichent une barre de progression `indicatif`,
+/// désactivable via `--no-color` (SPEC-T02).
 pub async fn run(cli: Cli) -> anyhow::Result<Report> {
+    let npm_command = simulate::resolve_npm_command(cli.npm_path.as_deref());
+    let npm_available = simulate::check_npm_available(&npm_command).await;
+
     let working_dir = std::env::current_dir()?.join(simulate::WORKING_DIRNAME);
-    tokio::fs::create_dir_all(&working_dir).await?;
+    if npm_available {
+        tokio::fs::create_dir_all(&working_dir).await?;
+    }
 
     let db = IocDatabase::load(cli.database.as_deref(), cli.offline).await?;
 
@@ -63,22 +70,43 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     let db = Arc::new(db);
     let semaphore = Arc::new(Semaphore::new(cli.workers.max(1)));
     let npm_timeout = Duration::from_secs(cli.npm_timeout);
-    let simulation_progress = bar(cli.no_color, project_count as u64)?;
-    let mut simulations = tokio::task::JoinSet::new();
-    for project in projects {
-        let db = Arc::clone(&db);
-        let semaphore = Arc::clone(&semaphore);
-        let working_dir = working_dir.clone();
-        simulations.spawn(async move {
-            simulate::simulate_install(&project, &db, &semaphore, &working_dir, npm_timeout).await
-        });
-    }
+    let simulation_progress = bar(
+        cli.no_color,
+        if npm_available {
+            project_count as u64
+        } else {
+            0
+        },
+    )?;
 
-    while let Some(outcome) = simulations.join_next().await {
-        simulation_progress.inc(1);
-        if let Ok(Ok(simulated)) = outcome {
-            findings.extend(simulated);
+    if npm_available {
+        let mut simulations = tokio::task::JoinSet::new();
+        for project in projects {
+            let db = Arc::clone(&db);
+            let semaphore = Arc::clone(&semaphore);
+            let working_dir = working_dir.clone();
+            let npm_command = npm_command.clone();
+            simulations.spawn(async move {
+                simulate::simulate_install(
+                    &project,
+                    &db,
+                    &semaphore,
+                    &working_dir,
+                    npm_timeout,
+                    &npm_command,
+                )
+                .await
+            });
         }
+
+        while let Some(outcome) = simulations.join_next().await {
+            simulation_progress.inc(1);
+            if let Ok(Ok(simulated)) = outcome {
+                findings.extend(simulated);
+            }
+        }
+    } else {
+        debug!("simulation npm install ignorée pour l'ensemble du scan (npm indisponible)");
     }
     simulation_progress.finish_and_clear();
 

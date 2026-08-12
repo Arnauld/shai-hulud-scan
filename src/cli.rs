@@ -46,6 +46,13 @@ pub struct Cli {
     #[arg(long, default_value_t = 120)]
     pub npm_timeout: u64,
 
+    /// Chemin complet vers l'exécutable npm à utiliser pour la simulation
+    /// d'installation (SPEC-F04 niveau 2). Par défaut, `npm` est recherché dans le
+    /// PATH. Sa disponibilité est systématiquement vérifiée au démarrage et
+    /// journalisée en INFO ; si indisponible, la simulation est entièrement ignorée.
+    #[arg(long)]
+    pub npm_path: Option<PathBuf>,
+
     /// Active le niveau de log DEBUG et journalise chaque fichier analysé pendant
     /// le parcours (SPEC-T04). Les logs sont toujours émis sur stderr. `RUST_LOG`
     /// prime sur ce flag si défini.
