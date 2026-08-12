@@ -66,7 +66,18 @@ Pour chaque dossier de projet Node.js identifié :
     *   Si un `package-lock.json` ou un `yarn.lock` existe, l'analyser.
     *   *NPM (JSON) :* Parser le fichier JSON et extraire les dépendances transitives des champs `packages` (formats v2/v3) et `dependencies` (format v1).
     *   *Yarn (Lockfile format) :* Écrire un décodeur linéaire efficace en Rust pour parser la syntaxe du `yarn.lock` (Classic v1 et Berry v2+) afin d'extraire les paquets et leurs versions résolues.
-    *   Vérifier chaque dépendance par rapport à la base d'IOC et classifier : `VULNÉRABLE` (si version compromise détectée) ou `SAIN`.
+    *   Vérifier chaque dépendance par rapport à la base d'IOC et classifier en **trois** niveaux
+        (et non plus une simple bascule vulnérable/sain) :
+        *   `SAIN` : le paquet n'apparaît **pas du tout** dans la base IOC, quelle que soit la
+            version rencontrée — totalement étranger à la campagne connue.
+        *   `VULNÉRABLE` : le paquet **est référencé** dans la base IOC (au moins une version
+            compromise y est connue), mais la version rencontrée ne correspond à **aucune** des
+            versions listées — signal de vigilance sur un paquet ciblé par la campagne, sans
+            confirmation exacte à cette version précise. Doit exposer la version rencontrée **et**
+            la liste des versions compromises connues pour ce paquet, pour que l'utilisateur puisse
+            juger de la proximité du risque.
+        *   `CORROMPU` : la version rencontrée correspond **exactement** à une version listée comme
+            compromise dans la base IOC — confirmation directe. Doit exposer la version rencontrée.
 *   **Niveau 2 : Évaluation potentielle (Simulation), dans un répertoire de travail isolé :**
     *   **Ne jamais exécuter `npm install` dans le répertoire du projet lui-même.** Constaté en
         pratique : même en `--package-lock-only`, `npm` peut réécrire un `yarn.lock` déjà présent
@@ -196,7 +207,7 @@ Le rapport final (console et `--report-file`) doit exposer un niveau de détail 
 *   **Flag CLI :** `--report-level <error|warn|info|debug>`, réutilisant la même échelle que la journalisation (SPEC-T04) plutôt qu'une taxonomie de verbosité ad hoc.
 *   **Valeur par défaut : `debug`** (verbose) — volontairement l'inverse du niveau de log par défaut (`info`) : le bruit diagnostique doit rester discret par défaut, mais le résultat du scan doit être complet par défaut.
 *   **Contenu par niveau (cumulatif, du plus restrictif au plus complet) :**
-    *   `ERROR` : uniquement les dépendances `VULNÉRABLE` et les signaux de Threat Hunting détectés (ou `"Aucune compromission détectée"` si le scan est propre) — jamais masqué, quel que soit le niveau choisi.
+    *   `ERROR` : uniquement les dépendances `CORROMPU`/`VULNÉRABLE` (SPEC-F04) et les signaux de Threat Hunting détectés (ou `"Aucune compromission détectée"` si le scan est propre) — jamais masqué, quel que soit le niveau choisi.
     *   `WARN` : ajoute le nombre total de dépendances analysées.
     *   `INFO` : ajoute le nombre de projets npm/yarn analysés.
     *   `DEBUG` (par défaut) : ajoute la liste complète des dépendances `SAIN`, pour une transparence totale sur tout ce qui a été vérifié.
