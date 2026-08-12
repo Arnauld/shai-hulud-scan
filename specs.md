@@ -201,6 +201,15 @@ L'outil doit intégrer une journalisation structurée, distincte des barres de p
     au rapport final (`--report-file`/`--json`/console), qui n'est écrit qu'une seule fois, une fois
     **toutes** les simulations terminées, et ne doit donc jamais être confondu avec un fichier de
     log à surveiller en direct.
+*   **Directives explicites (`--log-console-directive <directive>` / `--log-file-directive
+    <directive>`) :** Permettent de fournir directement une directive de filtrage `tracing` (syntaxe
+    `RUST_LOG`, ex. `"info,shai_hulud_guard=debug"`) pour, respectivement, la sortie console et le
+    fichier de log, plutôt que de se limiter aux niveaux prédéfinis. Ordre de priorité pour la
+    console : `RUST_LOG` (variable d'environnement) > `--log-console-directive` > `--verbose` — si
+    `--log-console-directive` est fournie, elle **supplante** `--verbose`. Pour le fichier de log,
+    `--log-file-directive` remplace la valeur par défaut (`"info,shai_hulud_guard=debug"`, toujours
+    DEBUG) sans être affectée par `RUST_LOG` ni `--verbose` ; sans effet si `--log-file` n'est pas
+    fourni.
 
 ### SPEC-T05 - Niveau de verbosité du rapport
 Le rapport final (console et `--report-file`) doit exposer un niveau de détail configurable, **indépendant** du niveau de log `--verbose` (SPEC-T04) : par défaut, un utilisateur qui lance un scan de sécurité veut voir le résultat complet sans avoir à activer un mode diagnostique séparé.
