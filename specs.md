@@ -136,3 +136,14 @@ L'outil doit compiler sous forme de binaire unique, statique et autonome, sans n
     *   Linux (binaire statique compilé avec `x86_64-unknown-linux-musl` pour une portabilité totale sans dépendance `glibc`).
     *   macOS (binaire universel supportant Intel et Apple Silicon).
     *   Windows (binaire autonome `.exe`).
+
+### SPEC-T04 - Journalisation (Logging)
+L'outil doit intégrer une journalisation structurée, distincte des barres de progression `indicatif` (SPEC-T02) et du rapport d'audit final (console/`--report-file`/`--json`) : les logs sont un flux diagnostique séparé, pas une restitution des résultats.
+*   **Crate Recommandée :** `tracing` + `tracing-subscriber`, cohérent avec l'architecture asynchrone `tokio` (SPEC-T01) et permettant d'instrumenter le cycle de vie de chaque étape (téléchargement IOC, parcours de fichiers, audit par projet, simulation npm, Threat Hunting) via des spans.
+*   **Sortie :** Toujours sur **stderr**, jamais sur stdout, afin de ne jamais polluer une sortie `--json` redirigée dans un pipeline CI/CD. Respecte `--no-color` pour désactiver la coloration des logs comme celle du rapport.
+*   **Niveaux :**
+    *   `ERROR` : échec bloquant (ex. échec réseau **et** absence de fallback local pour la base IOC).
+    *   `WARN` : échec partiel toléré (ex. simulation `npm install` échouée pour un projet, restauration du lockfile d'origine).
+    *   `INFO` (niveau par défaut) : jalons de haut niveau (projet découvert, base IOC chargée, rapport généré).
+    *   `DEBUG` : détail fin de chaque vérification (dépendance auditée, signal de Threat Hunting détecté).
+*   **Mode Verbeux (`--verbose` / `-v`) :** Active le niveau `DEBUG` et **journalise l'ensemble des fichiers analysés** lors du parcours (SPEC-F02), un log par fichier visité avec son chemin complet (ex. `fichier analysé : <path>`). Ce log par fichier reste désactivé par défaut (silencieux au niveau `INFO`) pour éviter un volume de sortie excessif sur de grandes arborescences.
