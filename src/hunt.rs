@@ -22,6 +22,11 @@ pub const SUSPICIOUS_FILENAMES: &[&str] = &[
     // Math_Symbol.js (même hash SHA-256, nom différent selon le vecteur de propagation).
     "math_init.js",
     "bundle.js",
+    // SPEC-F08 : emplacements réels de persistance Claude Code / VS Code — pas
+    // seulement `<racine>/setup.mjs`, jusqu'ici absents du scan (trou de couverture).
+    ".claude/setup.mjs",
+    ".vscode/setup.mjs",
+    ".dev-utils/server.js",
 ];
 
 /// Empreintes SHA-256 connues des charges du ver (SPEC-F08, source : Elastic Security
@@ -130,7 +135,22 @@ fn scan_root(root: &Path) -> Vec<ThreatSignal> {
         ThreatCategory::ExfilArtifact,
     ));
     signals.extend(scan_cache_dir(root));
+    signals.extend(scan_vscode_tasks(root));
     signals
+}
+
+/// Vérifie `.vscode/tasks.json` pour une tâche `folderOpen` malveillante déclenchant
+/// le payload `setup.mjs` à l'ouverture du dossier dans VS Code (SPEC-F08).
+fn scan_vscode_tasks(root: &Path) -> Option<ThreatSignal> {
+    let path = root.join(".vscode").join("tasks.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+    content
+        .contains(SUSPICIOUS_HOOK_MARKER)
+        .then(|| ThreatSignal {
+            category: ThreatCategory::SuspiciousHook,
+            detail: format!("tâche VS Code suspecte détectée ({SUSPICIOUS_HOOK_MARKER})"),
+            path,
+        })
 }
 
 /// Recherche les fichiers de charge utile connus (`SUSPICIOUS_FILENAMES`) et vérifie
@@ -353,6 +373,59 @@ mod tests {
 
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::SuspiciousFile);
+    }
+
+    #[test]
+    fn detects_claude_and_vscode_persistence_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(dir.path().join(".claude").join("setup.mjs"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join(".vscode")).unwrap();
+        std::fs::write(dir.path().join(".vscode").join("setup.mjs"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join(".dev-utils")).unwrap();
+        std::fs::write(dir.path().join(".dev-utils").join("server.js"), "").unwrap();
+
+        let signals = scan_root(dir.path());
+        assert_eq!(signals.len(), 3);
+        assert!(signals
+            .iter()
+            .any(|s| s.path == dir.path().join(".claude").join("setup.mjs")));
+        assert!(signals
+            .iter()
+            .any(|s| s.path == dir.path().join(".vscode").join("setup.mjs")));
+        assert!(signals
+            .iter()
+            .any(|s| s.path == dir.path().join(".dev-utils").join("server.js")));
+    }
+
+    #[test]
+    fn detects_a_malicious_vscode_folder_open_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let vscode = dir.path().join(".vscode");
+        std::fs::create_dir_all(&vscode).unwrap();
+        std::fs::write(
+            vscode.join("tasks.json"),
+            r#"{"tasks":[{"runOptions":{"runOn":"folderOpen"},"command":"node .vscode/setup.mjs"}]}"#,
+        )
+        .unwrap();
+
+        let signals = scan_vscode_tasks(dir.path());
+        assert!(signals.is_some());
+        assert_eq!(signals.unwrap().category, ThreatCategory::SuspiciousHook);
+    }
+
+    #[test]
+    fn ignores_a_clean_vscode_tasks_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let vscode = dir.path().join(".vscode");
+        std::fs::create_dir_all(&vscode).unwrap();
+        std::fs::write(
+            vscode.join("tasks.json"),
+            r#"{"tasks":[{"label":"build","command":"npm run build"}]}"#,
+        )
+        .unwrap();
+
+        assert!(scan_vscode_tasks(dir.path()).is_none());
     }
 
     #[test]
