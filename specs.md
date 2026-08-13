@@ -135,7 +135,16 @@ Pour chaque dossier de projet Node.js identifié :
 ### SPEC-F05 - Détection passive dans le code source (NPM et Yarn)
 L'outil doit scanner le code source de tous les fichiers du dépôt (hors fichiers exclus comme `.js`, `.json`, `.css`, images, binaires, etc.) à la recherche d'occurrences d'instructions d'installation directes.
 *   **Crate Recommandé :** Utiliser la crate **`regex`** pour une recherche multi-threadée ultra-rapide.
-*   **Regex NPM :** `npm\s(install|ci|update)`
+*   **Regex NPM :** `npm\s(install|add|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|ci|clean-install|ic|install-clean|isntall-clean|update|u|up|upgrade|udpate)\b`
+    — couvre `npm install`/`npm ci`/`npm update` **et** tous leurs alias documentés (`\b` final pour
+    éviter qu'un alias court comme `i`/`u`/`up` ne matche par erreur le début d'un autre mot, ex.
+    `npm inches`) :
+    *   `install` : `add`, `i`, `in`, `ins`, `inst`, `insta`, `instal`, `isnt`, `isnta`, `isntal`,
+        `isntall` (voir [npm-install](https://docs.npmjs.com/cli/v12/commands/npm-install)).
+    *   `ci` : `clean-install`, `ic`, `install-clean`, `isntall-clean` (voir
+        [npm-ci](https://docs.npmjs.com/cli/v12/commands/npm-ci)).
+    *   `update` : `u`, `up`, `upgrade`, `udpate` (voir
+        [npm-update](https://docs.npmjs.com/cli/v12/commands/npm-update)).
 *   **Regex Yarn :** `yarn\s(install|add|ci|upgrade|run)`
 
 ### SPEC-F06 - Recherche active de signaux malveillants (Threat Hunting / Forensics)

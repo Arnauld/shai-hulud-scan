@@ -10,10 +10,21 @@ use regex::Regex;
 
 use crate::hunt::{ThreatCategory, ThreatSignal};
 
-static NPM_INSTALL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"npm\s(install|ci|update)").unwrap());
+/// `\b` final : évite qu'un alias court (`i`, `u`, `up`...) ne matche par erreur le
+/// début d'un autre mot (ex. `npm inches`) plutôt que la commande elle-même.
+/// Alias documentés par npm (SPEC-F05) :
+/// install → add, i, in, ins, inst, insta, instal, isnt, isnta, isntal, isntall
+/// (<https://docs.npmjs.com/cli/v12/commands/npm-install>) ; ci → clean-install, ic,
+/// install-clean, isntall-clean (<https://docs.npmjs.com/cli/v12/commands/npm-ci>) ;
+/// update → u, up, upgrade, udpate (<https://docs.npmjs.com/cli/v12/commands/npm-update>).
+static NPM_INSTALL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"npm\s+(install|add|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|ci|clean-install|ic|install-clean|isntall-clean|update|u|up|upgrade|udpate)\b",
+    )
+    .unwrap()
+});
 static YARN_INSTALL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"yarn\s(install|add|ci|upgrade|run)").unwrap());
+    LazyLock::new(|| Regex::new(r"yarn\s+(install|add|ci|upgrade|run)").unwrap());
 
 /// Vrai si `content` contient une instruction d'installation npm ou yarn directe.
 pub fn contains_install_command(content: &str) -> bool {
@@ -136,6 +147,43 @@ mod tests {
         assert!(contains_install_command("run `npm install` first"));
         assert!(contains_install_command("then yarn add lodash"));
         assert!(!contains_install_command("just some readme text"));
+    }
+
+    #[test]
+    fn detects_documented_npm_install_ci_and_update_aliases() {
+        for alias in [
+            "install", "add", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta",
+            "isntal", "isntall",
+        ] {
+            assert!(
+                contains_install_command(&format!("npm {alias}")),
+                "npm install alias not detected: {alias}"
+            );
+        }
+        for alias in [
+            "ci",
+            "clean-install",
+            "ic",
+            "install-clean",
+            "isntall-clean",
+        ] {
+            assert!(
+                contains_install_command(&format!("npm {alias}")),
+                "npm ci alias not detected: {alias}"
+            );
+        }
+        for alias in ["update", "u", "up", "upgrade", "udpate"] {
+            assert!(
+                contains_install_command(&format!("npm {alias}")),
+                "npm update alias not detected: {alias}"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_match_a_short_alias_as_a_prefix_of_another_word() {
+        assert!(!contains_install_command("npm inches"));
+        assert!(!contains_install_command("npm updater"));
     }
 
     #[test]
