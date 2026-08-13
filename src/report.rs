@@ -11,6 +11,8 @@ use crate::audit::Finding;
 use crate::hunt::{InstallScript, ThreatSignal};
 use crate::ioc::CompromiseStatus;
 
+const REPORT_NOT_COMPROMISED: bool = false;
+
 /// Niveau de détail du rapport (`--report-level`), indépendant du niveau de log
 /// `--verbose` (SPEC-T04) : réutilise la même échelle `ERROR < WARN < INFO < DEBUG`
 /// (SPEC-T05). Cumulatif : chaque niveau inclut le contenu des niveaux précédents.
@@ -208,14 +210,16 @@ impl Report {
         }
 
         if level >= ReportLevel::Debug {
-            for finding in &self.findings {
-                if finding.status == CompromiseStatus::Sain {
-                    out.push_str(&format!(
-                        "{} {}@{}\n",
-                        style("[SAIN]").green(),
-                        finding.package,
-                        finding.version
-                    ));
+            if REPORT_NOT_COMPROMISED {
+                for finding in &self.findings {
+                    if finding.status == CompromiseStatus::Sain {
+                        out.push_str(&format!(
+                            "{} {}@{}\n",
+                            style("[SAIN]").green(),
+                            finding.package,
+                            finding.version
+                        ));
+                    }
                 }
             }
 
@@ -399,8 +403,10 @@ mod tests {
         assert!(info_text.contains("projet(s) npm/yarn analysé"));
         assert!(!info_text.contains("safe-pkg"));
 
+        // REPORT_NOT_COMPROMISED == false : la liste des paquets [SAIN] reste masquée
+        // même au niveau debug — seules les anomalies restent toujours affichées.
         let debug_text = report.render_text(ReportLevel::Debug);
-        assert!(debug_text.contains("safe-pkg@2.0.0"));
+        assert!(!debug_text.contains("safe-pkg@2.0.0"));
     }
 
     #[test]
