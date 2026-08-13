@@ -325,3 +325,37 @@ Le rapport final (console et `--report-file`) doit exposer un niveau de détail 
     *   `DEBUG` (par défaut) : ajoute la liste complète des dépendances `SAIN`, pour une transparence totale sur tout ce qui a été vérifié.
 *   **Récapitulatif groupé par projet :** L'outil doit conserver, pour chaque dépendance `VULNÉRABLE` ou `CORROMPU` détectée (SPEC-F04), le projet (chemin du dossier) qui la référence — au niveau 1 (lockfile), au niveau 2 (simulation), et pour les paquets déjà installés (`node_modules`). Le récapitulatif affiché **regroupe ces dépendances par projet** (un bloc par dossier de projet, trié par chemin), plutôt qu'une simple liste plate sans contexte : l'utilisateur doit pouvoir identifier immédiatement *quel* projet référence *quelle* version problématique.
 *   **Portée :** S'applique uniquement au rendu texte (console et `--report-file`, tous deux dérivés du même rendu). Le format `--json` reste toujours complet (SPEC-T02), indépendamment de `--report-level`, puisqu'il est destiné à l'intégration programmatique et ne doit pas perdre d'information selon la verbosité choisie — chaque dépendance y porte déjà son projet d'origine.
+
+### SPEC-T06 - Configuration externalisée des signatures IOC (`iocs.toml`)
+Toutes les listes/valeurs de signatures utilisées par le moteur de Threat Hunting (SPEC-F06/F07/F08)
+et le scan passif (SPEC-F05) doivent être paramétrables sans recompilation, plutôt que codées en dur
+dans les modules Rust — ces signatures évoluent au rythme des campagnes, bien plus vite que le code
+qui les consomme.
+*   **Fichier embarqué par défaut :** `iocs.toml`, à la racine du dépôt, est intégré tel quel dans le
+    binaire au moment de la compilation (`include_str!`) : aucun fichier n'est requis à côté de
+    l'exécutable pour un fonctionnement par défaut complet.
+*   **Flag CLI `--iocs-file <chemin>` :** fournit un fichier TOML personnalisé, **fusionné champ par
+    champ** par-dessus les valeurs par défaut embarquées — toute clé absente du fichier fourni
+    conserve sa valeur par défaut (un fichier qui ne redéfinit que `known_c2_markers`, par exemple,
+    garde toutes les autres listes par défaut). Une clé présente mais explicitement vide (`[]`) vide
+    bien la liste par défaut correspondante — la fusion ne s'applique qu'à l'absence de la clé, pas à
+    son contenu. Distinct de `--database`/`--offline` (SPEC-F01), qui concernent la base CSV des
+    paquets npm compromis, pas les signatures de Threat Hunting.
+*   **Valeurs paramétrables (toutes des listes, sauf les deux regex) :** `suspicious_filenames`,
+    `known_malicious_file_hashes` (liste de `{ hash, label }`), `suspicious_hook_markers`,
+    `suspicious_launch_agent_markers`, `exfil_artifact_filenames`, `suspicious_workflow_filenames`,
+    `suspicious_cache_dirnames`, `default_git_template_dirnames`, `npmrc_secret_keys`,
+    `known_c2_markers`, `excluded_extensions`, `allowed_registry_hosts`, `npm_install_regex`,
+    `yarn_install_regex`. Les marqueurs qui n'admettaient historiquement qu'une seule valeur en dur
+    (hook VS Code/node_modules, LaunchAgent macOS, dossier de cache) sont désormais des listes,
+    pour permettre d'en déclarer plusieurs.
+*   **Alias npm/yarn :** paramétrés directement sous forme de regex complète (`npm_install_regex`/
+    `yarn_install_regex`) plutôt que comme une liste d'alias assemblée en pattern au chargement — plus
+    simple à auditer et à faire évoluer pour qui maintient ce fichier.
+*   **Piège TOML à connaître :** une fois qu'un tableau de tables `[[known_malicious_file_hashes]]`
+    est ouvert, toute ligne `clé = valeur` qui suit lui est rattachée plutôt que d'être une clé de
+    premier niveau — cette section doit donc toujours rester en fin de fichier, après toutes les clés
+    simples (voir l'avertissement en tête d'`iocs.toml`).
+*   **Erreurs :** un fichier `--iocs-file` illisible, un TOML invalide, ou une regex `npm_install_regex`/
+    `yarn_install_regex` invalide sont des erreurs bloquantes (échec net au démarrage, pas de repli
+    silencieux) — un remplacement partiellement appliqué serait plus trompeur qu'un échec explicite.

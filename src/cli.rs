@@ -24,6 +24,14 @@ pub struct Cli {
     #[arg(long)]
     pub offline: bool,
 
+    /// Fichier TOML de signatures de Threat Hunting (fichiers/hashes/marqueurs/regex,
+    /// SPEC-F06/F07/F08), fusionné champ par champ par-dessus les valeurs par défaut
+    /// embarquées dans le binaire (`iocs.toml` du dépôt) — toute clé absente du
+    /// fichier fourni garde sa valeur par défaut. Distinct de `--database`, qui
+    /// concerne la base CSV des paquets npm compromis (SPEC-F01).
+    #[arg(long)]
+    pub iocs_file: Option<PathBuf>,
+
     /// Écrit un rapport texte brut (sans codes ANSI) dans le fichier indiqué.
     #[arg(long)]
     pub report_file: Option<PathBuf>,

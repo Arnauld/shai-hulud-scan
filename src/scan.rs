@@ -3,84 +3,53 @@
 //! secrets en clair dans les fichiers `.env*` du workspace (SPEC-F08). Pour les
 //! fichiers JS/TS/Python, une correspondance trouvée à l'intérieur d'un commentaire
 //! (`comments::comment_spans`) voit sa sévérité abaissée (`CommandFoundInComment`)
-//! plutôt que d'être traitée comme une correspondance normale.
+//! plutôt que d'être traitée comme une correspondance normale. Les regex et listes de
+//! marqueurs/extensions viennent de `config: &IocsConfig` (`iocs.toml`, SPEC-F08).
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
 use indicatif::ProgressBar;
-use regex::Regex;
 
 use crate::comments::{comment_spans, is_within_comment, language_for_path};
 use crate::hunt::{ThreatCategory, ThreatSignal};
+use crate::iocs::IocsConfig;
 
-/// `\b` final : évite qu'un alias court (`i`, `u`, `up`...) ne matche par erreur le
-/// début d'un autre mot (ex. `npm inches`) plutôt que la commande elle-même.
-/// Alias documentés par npm (SPEC-F05) :
-/// install → add, i, in, ins, inst, insta, instal, isnt, isnta, isntal, isntall
-/// (<https://docs.npmjs.com/cli/v12/commands/npm-install>) ; ci → clean-install, ic,
-/// install-clean, isntall-clean (<https://docs.npmjs.com/cli/v12/commands/npm-ci>) ;
-/// update → u, up, upgrade, udpate (<https://docs.npmjs.com/cli/v12/commands/npm-update>).
-static NPM_INSTALL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"npm\s+(install|add|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|ci|clean-install|ic|install-clean|isntall-clean|update|u|up|upgrade|udpate)\b",
-    )
-    .unwrap()
-});
-static YARN_INSTALL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"yarn\s+(install|add|ci|upgrade|run)").unwrap());
-
-/// Vrai si `content` contient une instruction d'installation npm ou yarn directe.
-pub fn contains_install_command(content: &str) -> bool {
-    NPM_INSTALL.is_match(content) || YARN_INSTALL.is_match(content)
+/// Vrai si `content` contient une instruction d'installation npm ou yarn directe,
+/// selon les regex de `config` (SPEC-F05).
+pub fn contains_install_command(content: &str, config: &IocsConfig) -> bool {
+    config.npm_install_regex.is_match(content) || config.yarn_install_regex.is_match(content)
 }
 
-/// Marqueurs C2 connus des campagnes Shai-Hulud / CHAINDROP (SPEC-F08, source :
-/// Elastic Security Labs et vagues précédentes — Datadog, JFrog).
-pub const KNOWN_C2_MARKERS: &[&str] = &[
-    "npm-cache.com",
-    "js-mirror.com",
-    "pypi-get.com",
-    "awqhnjewqjkl.icu",
-    "SANDWORM",
-    "official334",
-    "webhook.site",
-    "0xE1f2395ee43e45A1556EC6438a88c31B83493103",
-];
-
-/// Retourne les marqueurs C2 connus présents dans `content`.
-pub fn find_known_c2_markers(content: &str) -> Vec<&'static str> {
-    KNOWN_C2_MARKERS
+/// Retourne les marqueurs C2 connus (`config.known_c2_markers`, SPEC-F08) présents
+/// dans `content`.
+pub fn find_known_c2_markers<'a>(content: &str, config: &'a IocsConfig) -> Vec<&'a str> {
+    config
+        .known_c2_markers
         .iter()
-        .copied()
+        .map(String::as_str)
         .filter(|marker| content.contains(marker))
         .collect()
 }
 
-/// Extensions volontairement exclues du scan passif (SPEC-F05) : formats non
-/// textuels/non exécutables (structure JSON, CSS, images, polices, archives). Les
-/// fichiers JS/JSX/TS/TSX/MJS/CJS/Python restent scannés — l'ancien risque de faux
-/// positif sur ces extensions (chaîne trouvée dans un commentaire/exemple) est
-/// désormais couvert par le lexer de commentaires (`comments::comment_spans`,
-/// SPEC-F05/F08), qui abaisse la sévérité plutôt que d'exclure toute l'extension.
-const EXCLUDED_EXTENSIONS: &[&str] = &[
-    "json", "css", "png", "jpg", "jpeg", "gif", "svg", "ico", "webp", "woff", "woff2", "ttf",
-    "eot", "pdf", "zip", "gz", "tar",
-];
-
-fn is_excluded(path: &Path) -> bool {
+fn is_excluded(path: &Path, config: &IocsConfig) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| EXCLUDED_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .is_some_and(|ext| {
+            config
+                .excluded_extensions
+                .iter()
+                .any(|excluded| excluded.eq_ignore_ascii_case(ext))
+        })
 }
 
 /// Positions `[start, end)` de toutes les correspondances d'instruction d'installation
 /// npm/yarn dans `content`.
-fn install_command_matches(content: &str) -> Vec<(usize, usize)> {
-    NPM_INSTALL
+fn install_command_matches(content: &str, config: &IocsConfig) -> Vec<(usize, usize)> {
+    config
+        .npm_install_regex
         .find_iter(content)
-        .chain(YARN_INSTALL.find_iter(content))
+        .chain(config.yarn_install_regex.find_iter(content))
         .map(|m| (m.start(), m.end()))
         .collect()
 }
@@ -91,14 +60,15 @@ fn install_command_matches(content: &str) -> Vec<(usize, usize)> {
 /// SPEC-F05/F08). `spans` vaut `None` pour les extensions non couvertes par le lexer
 /// (`comments::language_for_path`), auquel cas tout marqueur trouvé reste `in_code`
 /// (comportement historique, inchangé).
-fn classify_c2_markers(
+fn classify_c2_markers<'a>(
     content: &str,
+    config: &'a IocsConfig,
     spans: Option<&[Range<usize>]>,
-) -> (Vec<&'static str>, Vec<&'static str>) {
+) -> (Vec<&'a str>, Vec<&'a str>) {
     let mut in_code = Vec::new();
     let mut in_comment_only = Vec::new();
 
-    for marker in find_known_c2_markers(content) {
+    for marker in find_known_c2_markers(content, config) {
         let all_in_comment = match spans {
             Some(spans) => content
                 .match_indices(marker)
@@ -146,14 +116,18 @@ fn has_literal_dotenv_secret(content: &str) -> bool {
 /// d'instructions d'installation directes mentionnées (SPEC-F05, simple indice
 /// contextuel — souvent bénin, ex. un README — retourné séparément, pas un
 /// `ThreatSignal`).
-pub fn scan_workspace(workspace_root: &Path, no_ignore: bool) -> (Vec<ThreatSignal>, Vec<PathBuf>) {
+pub fn scan_workspace(
+    workspace_root: &Path,
+    no_ignore: bool,
+    config: &IocsConfig,
+) -> (Vec<ThreatSignal>, Vec<PathBuf>) {
     let progress = ProgressBar::hidden();
     let mut threat_signals = Vec::new();
     let mut install_mentions = Vec::new();
 
     for entry in crate::walker::walk_including_hidden(workspace_root, &progress, no_ignore) {
         let path = entry.path();
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) || is_excluded(path) {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) || is_excluded(path, config) {
             continue;
         }
         let Ok(content) = std::fs::read_to_string(path) else {
@@ -162,7 +136,7 @@ pub fn scan_workspace(workspace_root: &Path, no_ignore: bool) -> (Vec<ThreatSign
 
         let spans = language_for_path(path).map(|lang| comment_spans(&content, lang));
 
-        let install_matches = install_command_matches(&content);
+        let install_matches = install_command_matches(&content, config);
         if !install_matches.is_empty() {
             let all_in_comment = match &spans {
                 Some(spans) => install_matches
@@ -178,7 +152,8 @@ pub fn scan_workspace(workspace_root: &Path, no_ignore: bool) -> (Vec<ThreatSign
             }
         }
 
-        let (real_markers, comment_only_markers) = classify_c2_markers(&content, spans.as_deref());
+        let (real_markers, comment_only_markers) =
+            classify_c2_markers(&content, config, spans.as_deref());
         if !real_markers.is_empty() {
             threat_signals.push(ThreatSignal {
                 category: ThreatCategory::KnownC2Marker,
@@ -214,21 +189,27 @@ pub fn scan_workspace(workspace_root: &Path, no_ignore: bool) -> (Vec<ThreatSign
 mod tests {
     use super::*;
 
+    fn default_config() -> IocsConfig {
+        crate::iocs::load(None).unwrap()
+    }
+
     #[test]
     fn detects_npm_and_yarn_install() {
-        assert!(contains_install_command("run `npm install` first"));
-        assert!(contains_install_command("then yarn add lodash"));
-        assert!(!contains_install_command("just some readme text"));
+        let config = default_config();
+        assert!(contains_install_command("run `npm install` first", &config));
+        assert!(contains_install_command("then yarn add lodash", &config));
+        assert!(!contains_install_command("just some readme text", &config));
     }
 
     #[test]
     fn detects_documented_npm_install_ci_and_update_aliases() {
+        let config = default_config();
         for alias in [
             "install", "add", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta",
             "isntal", "isntall",
         ] {
             assert!(
-                contains_install_command(&format!("npm {alias}")),
+                contains_install_command(&format!("npm {alias}"), &config),
                 "npm install alias not detected: {alias}"
             );
         }
@@ -240,13 +221,13 @@ mod tests {
             "isntall-clean",
         ] {
             assert!(
-                contains_install_command(&format!("npm {alias}")),
+                contains_install_command(&format!("npm {alias}"), &config),
                 "npm ci alias not detected: {alias}"
             );
         }
         for alias in ["update", "u", "up", "upgrade", "udpate"] {
             assert!(
-                contains_install_command(&format!("npm {alias}")),
+                contains_install_command(&format!("npm {alias}"), &config),
                 "npm update alias not detected: {alias}"
             );
         }
@@ -254,21 +235,24 @@ mod tests {
 
     #[test]
     fn does_not_match_a_short_alias_as_a_prefix_of_another_word() {
-        assert!(!contains_install_command("npm inches"));
-        assert!(!contains_install_command("npm updater"));
+        let config = default_config();
+        assert!(!contains_install_command("npm inches", &config));
+        assert!(!contains_install_command("npm updater", &config));
     }
 
     #[test]
     fn finds_known_c2_markers() {
+        let config = default_config();
         assert_eq!(
-            find_known_c2_markers("callback to https://npm-cache.com/x"),
+            find_known_c2_markers("callback to https://npm-cache.com/x", &config),
             vec!["npm-cache.com"]
         );
-        assert!(find_known_c2_markers("nothing suspicious here").is_empty());
+        assert!(find_known_c2_markers("nothing suspicious here", &config).is_empty());
     }
 
     #[test]
     fn scan_workspace_separates_c2_signals_from_install_mentions() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("README.md"), "Run `npm install` to start.").unwrap();
         std::fs::write(
@@ -290,7 +274,7 @@ mod tests {
         )
         .unwrap();
 
-        let (threat_signals, install_mentions) = scan_workspace(dir.path(), false);
+        let (threat_signals, install_mentions) = scan_workspace(dir.path(), false, &config);
 
         assert_eq!(threat_signals.len(), 2);
         assert!(threat_signals
@@ -308,6 +292,7 @@ mod tests {
 
     #[test]
     fn downgrades_a_c2_marker_found_only_inside_a_js_comment() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("app.js"),
@@ -315,7 +300,7 @@ mod tests {
         )
         .unwrap();
 
-        let (threat_signals, _) = scan_workspace(dir.path(), false);
+        let (threat_signals, _) = scan_workspace(dir.path(), false, &config);
 
         assert_eq!(threat_signals.len(), 1);
         assert_eq!(
@@ -327,6 +312,7 @@ mod tests {
 
     #[test]
     fn keeps_full_severity_for_a_c2_marker_found_in_actual_js_code() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("app.js"),
@@ -334,7 +320,7 @@ mod tests {
         )
         .unwrap();
 
-        let (threat_signals, _) = scan_workspace(dir.path(), false);
+        let (threat_signals, _) = scan_workspace(dir.path(), false, &config);
 
         assert_eq!(threat_signals.len(), 1);
         assert_eq!(threat_signals[0].category, ThreatCategory::KnownC2Marker);
@@ -342,6 +328,7 @@ mod tests {
 
     #[test]
     fn downgrades_a_python_comment_mention_but_not_a_string_literal_one() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("script.py"),
@@ -349,7 +336,7 @@ mod tests {
         )
         .unwrap();
 
-        let (threat_signals, _) = scan_workspace(dir.path(), false);
+        let (threat_signals, _) = scan_workspace(dir.path(), false, &config);
 
         assert_eq!(threat_signals.len(), 2);
         assert!(threat_signals
@@ -363,6 +350,7 @@ mod tests {
 
     #[test]
     fn does_not_report_an_install_command_mention_found_only_in_a_comment() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("setup.ts"),
@@ -370,12 +358,13 @@ mod tests {
         )
         .unwrap();
 
-        let (_, install_mentions) = scan_workspace(dir.path(), false);
+        let (_, install_mentions) = scan_workspace(dir.path(), false, &config);
         assert!(install_mentions.is_empty());
     }
 
     #[test]
     fn detects_a_literal_secret_in_a_dotenv_file() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(".env.production"),
@@ -383,7 +372,7 @@ mod tests {
         )
         .unwrap();
 
-        let (threat_signals, _) = scan_workspace(dir.path(), false);
+        let (threat_signals, _) = scan_workspace(dir.path(), false, &config);
 
         assert_eq!(threat_signals.len(), 1);
         assert_eq!(threat_signals[0].category, ThreatCategory::ExposedSecret);
@@ -392,10 +381,11 @@ mod tests {
 
     #[test]
     fn ignores_a_dotenv_file_with_only_env_interpolated_values() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".env"), "API_TOKEN=${API_TOKEN}\n").unwrap();
 
-        let (threat_signals, _) = scan_workspace(dir.path(), false);
+        let (threat_signals, _) = scan_workspace(dir.path(), false, &config);
         assert!(threat_signals.is_empty());
     }
 }

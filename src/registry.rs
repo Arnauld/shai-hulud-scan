@@ -1,34 +1,35 @@
 //! Détection de détournement de registre npm/yarn (SPEC-F08) : valide le champ
 //! `resolved` de chaque dépendance verrouillée contre l'allowlist des registres
-//! officiels attendus.
+//! officiels attendus (`config.allowed_registry_hosts`, `iocs.toml`).
 
 use std::path::Path;
 
 use crate::discovery::Project;
 use crate::hunt::{ThreatCategory, ThreatSignal};
+use crate::iocs::IocsConfig;
 use crate::lockfile::{parse_npm_lock, parse_yarn_lock, LockedDependency};
 
-/// Hôtes de registre officiels attendus (SPEC-F08) : toute URL `resolved` pointant
-/// ailleurs est un signal de détournement (registre privé compromis, proxy
-/// malveillant substitué au registre officiel).
-pub const ALLOWED_REGISTRY_HOSTS: &[&str] = &["registry.npmjs.org", "registry.yarnpkg.com"];
-
-/// Vrai si `url` pointe vers un hôte de registre autorisé (SPEC-F08).
-pub fn is_allowed_registry_url(url: &str) -> bool {
+/// Vrai si `url` pointe vers un hôte de registre autorisé par `allowed_hosts`
+/// (SPEC-F08).
+pub fn is_allowed_registry_url(url: &str, allowed_hosts: &[String]) -> bool {
     let Some((_, rest)) = url.split_once("://") else {
         return false;
     };
     let host = rest.split(['/', ':']).next().unwrap_or_default();
-    ALLOWED_REGISTRY_HOSTS
+    allowed_hosts
         .iter()
         .any(|allowed| host.eq_ignore_ascii_case(allowed))
 }
 
-fn hijacked_registry_signals(deps: &[LockedDependency], lockfile_path: &Path) -> Vec<ThreatSignal> {
+fn hijacked_registry_signals(
+    deps: &[LockedDependency],
+    lockfile_path: &Path,
+    allowed_hosts: &[String],
+) -> Vec<ThreatSignal> {
     deps.iter()
         .filter_map(|dep| {
             let resolved = dep.resolved.as_ref()?;
-            if is_allowed_registry_url(resolved) {
+            if is_allowed_registry_url(resolved, allowed_hosts) {
                 return None;
             }
             Some(ThreatSignal {
@@ -45,14 +46,18 @@ fn hijacked_registry_signals(deps: &[LockedDependency], lockfile_path: &Path) ->
 
 /// Vérifie les lockfiles existants d'un projet (SPEC-F04, niveau 1) pour un
 /// détournement de registre (SPEC-F08).
-pub fn scan_project(project: &Project) -> Vec<ThreatSignal> {
+pub fn scan_project(project: &Project, config: &IocsConfig) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
 
     if project.has_npm_lock {
         let path = project.root.join("package-lock.json");
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(deps) = parse_npm_lock(&content) {
-                signals.extend(hijacked_registry_signals(&deps, &path));
+                signals.extend(hijacked_registry_signals(
+                    &deps,
+                    &path,
+                    &config.allowed_registry_hosts,
+                ));
             }
         }
     }
@@ -61,7 +66,11 @@ pub fn scan_project(project: &Project) -> Vec<ThreatSignal> {
         let path = project.root.join("yarn.lock");
         if let Ok(content) = std::fs::read_to_string(&path) {
             let deps = parse_yarn_lock(&content);
-            signals.extend(hijacked_registry_signals(&deps, &path));
+            signals.extend(hijacked_registry_signals(
+                &deps,
+                &path,
+                &config.allowed_registry_hosts,
+            ));
         }
     }
 
@@ -72,26 +81,39 @@ pub fn scan_project(project: &Project) -> Vec<ThreatSignal> {
 mod tests {
     use super::*;
 
+    fn default_config() -> IocsConfig {
+        crate::iocs::load(None).unwrap()
+    }
+
     #[test]
     fn allows_the_official_npm_and_yarn_registries() {
+        let config = default_config();
         assert!(is_allowed_registry_url(
-            "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
+            "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
+            &config.allowed_registry_hosts
         ));
         assert!(is_allowed_registry_url(
-            "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"
+            "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz",
+            &config.allowed_registry_hosts
         ));
     }
 
     #[test]
     fn rejects_an_unofficial_registry_host() {
+        let config = default_config();
         assert!(!is_allowed_registry_url(
-            "https://evil-mirror.example.com/lodash/-/lodash-4.17.21.tgz"
+            "https://evil-mirror.example.com/lodash/-/lodash-4.17.21.tgz",
+            &config.allowed_registry_hosts
         ));
-        assert!(!is_allowed_registry_url("not a url"));
+        assert!(!is_allowed_registry_url(
+            "not a url",
+            &config.allowed_registry_hosts
+        ));
     }
 
     #[test]
     fn flags_a_dependency_resolved_from_an_unofficial_registry() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("package-lock.json"),
@@ -118,7 +140,7 @@ mod tests {
             has_yarn_lock: false,
         };
 
-        let signals = scan_project(&project);
+        let signals = scan_project(&project, &config);
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::HijackedRegistry);
         assert!(signals[0].detail.contains("evil-pkg"));
@@ -126,6 +148,7 @@ mod tests {
 
     #[test]
     fn no_signal_when_no_lockfile_present() {
+        let config = default_config();
         let dir = tempfile::tempdir().unwrap();
         let project = Project {
             root: dir.path().to_path_buf(),
@@ -133,6 +156,6 @@ mod tests {
             has_yarn_lock: false,
         };
 
-        assert!(scan_project(&project).is_empty());
+        assert!(scan_project(&project, &config).is_empty());
     }
 }
