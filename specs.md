@@ -133,7 +133,9 @@ Pour chaque dossier de projet Node.js identifié :
 > scan). À exclure du moteur de parcours (SPEC-F02), indépendamment de tout suivi git.
 
 ### SPEC-F05 - Détection passive dans le code source (NPM et Yarn)
-L'outil doit scanner le code source de tous les fichiers du dépôt (hors fichiers exclus comme `.js`, `.json`, `.css`, images, binaires, etc.) à la recherche d'occurrences d'instructions d'installation directes.
+L'outil doit scanner le code source de tous les fichiers du dépôt (hors fichiers exclus : JSON
+structurel, CSS, images, polices, archives) à la recherche d'occurrences d'instructions
+d'installation directes.
 *   **Crate Recommandé :** Utiliser la crate **`regex`** pour une recherche multi-threadée ultra-rapide.
 *   **Regex NPM :** `npm\s(install|add|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|ci|clean-install|ic|install-clean|isntall-clean|update|u|up|upgrade|udpate)\b`
     — couvre `npm install`/`npm ci`/`npm update` **et** tous leurs alias documentés (`\b` final pour
@@ -146,6 +148,23 @@ L'outil doit scanner le code source de tous les fichiers du dépôt (hors fichie
     *   `update` : `u`, `up`, `upgrade`, `udpate` (voir
         [npm-update](https://docs.npmjs.com/cli/v12/commands/npm-update)).
 *   **Regex Yarn :** `yarn\s(install|add|ci|upgrade|run)`
+*   **Nuance par contexte de commentaire (JS/JSX/TS/TSX/MJS/CJS/Python) :** `.js`/`.mjs`/`.cjs`
+    ne sont plus exclus du scan — le risque de faux positif que cette exclusion visait à éviter
+    (chaîne trouvée dans un commentaire, un exemple, ou la propre liste d'IOC d'un outil de
+    sécurité) est désormais traité par un lexer de commentaires minimal (`comments.rs` : suit les
+    chaînes `'...'`/`"..."`/`` `...` `` pour ne jamais confondre un `//` à l'intérieur d'une URL
+    avec un commentaire, et les délimiteurs `//`, `/* */`, `#` eux-mêmes). Une correspondance
+    (marqueur C2 SPEC-F08, mention npm/yarn install) trouvée **uniquement** à l'intérieur d'un
+    commentaire :
+    *   pour un marqueur C2 : reste un `ThreatSignal`, mais catégorisé
+        `CommandFoundInComment` plutôt que `KnownC2Marker` — sévérité volontairement abaissée,
+        toujours visible dans le rapport (transparence, SPEC-T05) mais distinguable d'une
+        correspondance en code réellement exécuté.
+    *   pour une mention npm/yarn install : n'est pas reportée du tout (déjà la sévérité la plus
+        basse — simple indice contextuel, Debug uniquement — sans palier plus bas à modéliser).
+    *   Les docstrings Python triple-guillemetées ne sont volontairement **pas** traitées comme
+        des commentaires (distinction docstring/chaîne de donnée hors de portée d'un lexer sans
+        contexte syntaxique) ; seuls les commentaires `#` classiques bénéficient de la nuance.
 
 ### SPEC-F06 - Recherche active de signaux malveillants (Threat Hunting / Forensics)
 L'outil doit intégrer des fonctionnalités de détection de menaces actives sur la machine de l'utilisateur :
@@ -219,6 +238,16 @@ SPEC-F06/F07 :
     présence de jetons/secrets en clair.
 9.  **Divergence lockfile / installé :** Comparer les versions déclarées dans le lockfile avec
     celles réellement présentes dans `node_modules`, signaler les paquets divergents.
+10. **Identifiants en clair dans un remote git HTTP :** Rechercher récursivement tous les dépôts
+    `.git` du workspace (sans jamais descendre dans `.git/` lui-même ni dans `node_modules`) et
+    vérifier, pour chaque section `[remote "..."]` de leur `config`, si l'URL déclarée utilise le
+    protocole `http://` (non chiffré) **et** porte des identifiants en clair dans l'URL elle-même
+    (userinfo `http://user:pass@host/...` ou `http://token@host/...`). Le secret trouvé n'est
+    jamais reporté en clair dans le rapport (identifiants masqués, `http://***@host/...`) — même
+    principe que le scan `.npmrc` (SPEC-F08 item 8), qui ne rapporte que le nom de la clé, jamais
+    sa valeur. Portée volontairement limitée à `http://` : une URL `https://` avec des identifiants
+    embarqués reste un mauvais usage (secret en clair sur disque), mais n'est pas transmise en
+    clair sur le réseau — signal jugé moins prioritaire, non couvert ici.
 
 > Prérequis d'exécution observé pour CHAINDROP : le jeton npm volé doit cumuler la permission
 > d'écriture sur le paquet **et** `bypass_2fa` (publication sans 2FA) — information contextuelle,

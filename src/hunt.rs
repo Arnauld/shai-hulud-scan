@@ -102,13 +102,19 @@ pub enum ThreatCategory {
     /// Champ `resolved` d'une dépendance verrouillée pointant vers un hôte hors de
     /// l'allowlist des registres officiels (SPEC-F08) : détournement de registre.
     HijackedRegistry,
-    /// Jeton/secret en clair détecté dans `~/.npmrc` ou un fichier `.env*` du
-    /// workspace (SPEC-F08).
+    /// Jeton/secret en clair détecté dans `~/.npmrc`, un fichier `.env*` du
+    /// workspace, ou l'URL d'un remote git en HTTP (SPEC-F08).
     ExposedSecret,
     /// Version installée dans `node_modules` différente de celle déclarée dans le
     /// lockfile (SPEC-F08) : `node_modules` désynchronisé, ou paquet substitué en
     /// dehors du contrôle du lockfile.
     LockfileDrift,
+    /// Correspondance sensible (marqueur C2, mention npm/yarn install) trouvée à
+    /// l'intérieur d'un commentaire de code (SPEC-F05, lexer JS/TS/Python) plutôt que
+    /// dans du code effectivement exécuté : sévérité volontairement abaissée par
+    /// rapport à la catégorie d'origine — signal probablement bénin (exemple,
+    /// documentation, liste d'IOC citée pour référence...).
+    CommandFoundInComment,
 }
 
 /// Un signal de compromission détecté sur le disque.
@@ -142,6 +148,7 @@ pub fn hunt(workspace_root: &Path, projects: &[Project]) -> Vec<ThreatSignal> {
     signals.extend(scan_claude_user_config());
     signals.extend(scan_git_hook_persistence());
     signals.extend(scan_npmrc_secrets());
+    signals.extend(scan_git_remote_credentials(workspace_root));
 
     signals.sort_by(|a, b| a.path.cmp(&b.path));
     signals.dedup();
@@ -545,6 +552,101 @@ fn scan_npmrc_secrets_at(path: &Path) -> Vec<ThreatSignal> {
         .collect()
 }
 
+/// Vérifie tous les dépôts `.git` du workspace (SPEC-F08) pour un remote en HTTP
+/// (pas HTTPS) portant des identifiants en clair dans l'URL elle-même
+/// (`http://user:pass@host/...`). Ne descend jamais dans `.git/` lui-même (objets/logs
+/// potentiellement énormes, aucun intérêt à les parcourir) ni dans `node_modules`
+/// (jamais de dépôt pertinent à y trouver, coûteux à traverser).
+pub fn scan_git_remote_credentials(workspace_root: &Path) -> Vec<ThreatSignal> {
+    let mut signals = Vec::new();
+    find_git_configs(workspace_root, &mut signals);
+    signals
+}
+
+fn find_git_configs(dir: &Path, signals: &mut Vec<ThreatSignal>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name();
+
+        if name == ".git" {
+            signals.extend(scan_git_config(&path.join("config")));
+            continue;
+        }
+        if name == "node_modules" {
+            continue;
+        }
+
+        find_git_configs(&path, signals);
+    }
+}
+
+/// Analyse texte volontairement simple d'un `.git/config` (même style que
+/// `extract_template_dir` pour `.gitconfig`) : repère chaque URL `url = ...` déclarée
+/// sous une section `[remote "..."]`.
+fn scan_git_config(config_path: &Path) -> Vec<ThreatSignal> {
+    let Ok(content) = std::fs::read_to_string(config_path) else {
+        return Vec::new();
+    };
+
+    let mut signals = Vec::new();
+    let mut in_remote_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(section) = trimmed.strip_prefix('[') {
+            in_remote_section = section.trim_end_matches(']').trim().starts_with("remote ");
+            continue;
+        }
+        if !in_remote_section {
+            continue;
+        }
+        let Some(url) = trimmed
+            .strip_prefix("url")
+            .map(str::trim_start)
+            .and_then(|rest| rest.strip_prefix('='))
+        else {
+            continue;
+        };
+        let url = url.trim();
+
+        if let Some(redacted) = http_remote_with_exposed_credentials(url) {
+            signals.push(ThreatSignal {
+                category: ThreatCategory::ExposedSecret,
+                detail: format!(
+                    "identifiants en clair dans l'URL d'un remote git en HTTP : {redacted}"
+                ),
+                path: config_path.to_path_buf(),
+            });
+        }
+    }
+
+    signals
+}
+
+/// Vrai si `url` est un remote git en HTTP (pas HTTPS) portant des identifiants en
+/// clair dans l'URL elle-même (userinfo `user:pass@`/`token@`) — retourne alors l'URL
+/// avec les identifiants masqués, pour l'inclure dans le rapport sans jamais y faire
+/// fuiter le secret trouvé (même principe que le scan `.npmrc` : ne rapporter que la
+/// clé/l'emplacement, jamais la valeur).
+fn http_remote_with_exposed_credentials(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("http://")?;
+    let (userinfo, host_and_path) = rest.split_once('@')?;
+    if userinfo.is_empty() {
+        return None;
+    }
+    Some(format!("http://***@{host_and_path}"))
+}
+
 fn scan_launch_agents_dir(dir: &Path) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -921,5 +1023,73 @@ mod tests {
         std::fs::write(dir.path().join("package.json"), r#"{"name":"demo"}"#).unwrap();
 
         assert!(inventory_install_scripts(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn detects_exposed_credentials_in_an_http_git_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join("repo").join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("config"),
+            "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = http://user:secret-token@github.com/foo/bar.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+        )
+        .unwrap();
+
+        let signals = scan_git_remote_credentials(dir.path());
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].category, ThreatCategory::ExposedSecret);
+        assert!(!signals[0].detail.contains("secret-token"));
+        assert!(signals[0].detail.contains("github.com/foo/bar.git"));
+    }
+
+    #[test]
+    fn ignores_an_https_git_remote_even_with_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join("repo").join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("config"),
+            "[remote \"origin\"]\n\turl = https://user:secret-token@github.com/foo/bar.git\n",
+        )
+        .unwrap();
+
+        assert!(scan_git_remote_credentials(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn ignores_an_http_git_remote_without_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join("repo").join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("config"),
+            "[remote \"origin\"]\n\turl = http://github.com/foo/bar.git\n",
+        )
+        .unwrap();
+
+        assert!(scan_git_remote_credentials(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn never_descends_into_git_or_node_modules_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(
+            dir.path().join(".git").join("config"),
+            "[remote \"origin\"]\n\turl = http://user:pw@example.com/x.git\n",
+        )
+        .unwrap();
+        let ignored_nested_git = dir.path().join("node_modules").join(".git");
+        std::fs::create_dir_all(&ignored_nested_git).unwrap();
+        std::fs::write(
+            ignored_nested_git.join("config"),
+            "[remote \"origin\"]\n\turl = http://user:pw@example.com/should-not-be-found.git\n",
+        )
+        .unwrap();
+
+        let signals = scan_git_remote_credentials(dir.path());
+        assert_eq!(signals.len(), 1);
+        assert!(signals[0].detail.contains("example.com/x.git"));
     }
 }
