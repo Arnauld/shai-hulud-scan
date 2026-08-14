@@ -39,6 +39,30 @@ pub struct IocDatabase {
     packages: HashMap<String, Vec<String>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RemoteCsv(String, String);
+
+impl RemoteCsv {
+    pub fn new(url: impl Into<String>, raw: impl Into<String>) -> anyhow::Result<Self> {
+        let url = url.into();
+        let raw = raw.into();
+
+        if raw.is_empty() {
+            anyhow::bail!("raw content cannot be empty");
+        }
+
+        Ok(Self(url, raw))
+    }
+
+    pub fn url(&self) -> &str {
+        &self.0
+    }
+
+    pub fn raw_content(&self) -> &str {
+        &self.1
+    }
+}
+
 impl IocDatabase {
     /// Parse un CSV au format `ecosystem,package,versions` (versions séparées par ` | `).
     pub fn from_csv(input: &str) -> Result<Self, csv::Error> {
@@ -99,7 +123,7 @@ impl IocDatabase {
     ) -> anyhow::Result<Self>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = anyhow::Result<String>>,
+        Fut: Future<Output = anyhow::Result<RemoteCsv>>,
     {
         if offline {
             info!("mode --offline actif, base IOC locale utilisée sans tentative réseau");
@@ -107,11 +131,11 @@ impl IocDatabase {
         }
         match download().await {
             Ok(csv) => {
-                info!("base IOC téléchargée depuis la source réseau officielle");
-                Ok(Self::from_csv(&csv)?)
+                info!("Base IOC téléchargée depuis {:?}", csv.url());
+                Ok(Self::from_csv(csv.raw_content())?)
             }
             Err(err) => {
-                warn!(error = %err, "téléchargement réseau de la base IOC échoué, repli sur la base locale");
+                warn!(error = %err, "Téléchargement réseau de la base IOC échoué, repli sur la base locale");
                 Self::load_local_fallback(database_path, fallback_dir)
             }
         }
@@ -138,12 +162,13 @@ impl IocDatabase {
     }
 }
 
-async fn download_csv(url: &str) -> anyhow::Result<String> {
+async fn download_csv(url: &str) -> anyhow::Result<RemoteCsv> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()?;
     let response = client.get(url).send().await?.error_for_status()?;
-    Ok(response.text().await?)
+    let raw_response = RemoteCsv::new(url, response.text().await?)?;
+    Ok(raw_response)
 }
 
 #[cfg(test)]
@@ -195,7 +220,7 @@ mod tests {
         let empty_dir = tempfile::tempdir().unwrap();
 
         let db = IocDatabase::load_with(None, empty_dir.path(), false, || async {
-            Ok(SAMPLE_CSV.to_string())
+            RemoteCsv::new("https://example.com/malicious-packages.csv", SAMPLE_CSV)
         })
         .await
         .unwrap();
