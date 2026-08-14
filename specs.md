@@ -296,6 +296,13 @@ L'outil doit intégrer une journalisation structurée, distincte des barres de p
     via le pont `log` → `tracing` (la crate de parcours journalise ses propres décisions via la
     façade `log` standard) combiné à `--verbose`, qui active `DEBUG` pour cette crate en plus de
     `shai_hulud_guard`.
+    *   **Cas "Accès refusé" simplifié :** Quand la cause est identifiable de façon fiable —
+        `std::io::ErrorKind::PermissionDenied` (normalisé par la std lib depuis `EACCES` sur Unix et
+        `ERROR_ACCESS_DENIED`/os error 5 sous Windows, très fréquent là-bas sur les dossiers système
+        type `C:\Program Files\...`) — le message est raccourci au chemin concerné, sans le texte
+        d'erreur OS verbeux répété à chaque entrée. Pour toute autre cause (chemin trop long, boucle
+        de symlinks...), le message détaillé d'origine est conservé tel quel — ces cas ne se
+        distinguent pas aussi proprement d'un simple `io::Error`.
 *   **Fichier de log (`--log-file <path>`) :** En plus de stderr (jamais à sa place), écrire
     les logs dans le fichier indiqué, **toujours au niveau `DEBUG`** pour ce binaire —
     indépendamment de `--verbose`, qui ne contrôle que le niveau affiché sur la console. Objectif

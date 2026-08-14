@@ -59,6 +59,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         projects.len()
     ));
 
+    info!(path = %cli.path.display(), "Analyse - phase audit projects");
     let mut findings: Vec<_> = projects
         .iter()
         .flat_map(|project| {
@@ -68,6 +69,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         })
         .collect();
 
+    info!(path = %cli.path.display(), "Analyse - phase hunting install scripts");
     let mut threats = hunt::hunt(&cli.path, &projects, &iocs_config);
     let install_scripts: Vec<_> = projects
         .iter()
@@ -83,6 +85,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     );
     threats.extend(projects.iter().flat_map(audit::audit_lockfile_drift));
 
+    info!(path = %cli.path.display(), "Analyse - npm install simulation");
     let project_count = projects.len();
     let db = Arc::new(db);
     let semaphore = Arc::new(Semaphore::new(cli.workers.max(1)));

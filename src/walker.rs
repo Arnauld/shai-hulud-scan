@@ -1,10 +1,55 @@
 //! Parcours de fichiers ultra-rapide via la crate `ignore` (SPEC-F02).
 
+use std::io::ErrorKind;
 use std::path::Path;
 
 use ignore::{DirEntry, WalkBuilder};
 use indicatif::ProgressBar;
 use tracing::{debug, warn};
+
+/// Chemin associé à une erreur de parcours, si `ignore::Error` en porte un
+/// (`WithPath`/`WithLineNumber`/`WithDepth` s'enveloppent les uns les autres selon le
+/// contexte où l'erreur a été rencontrée).
+fn walk_error_path(err: &ignore::Error) -> Option<&Path> {
+    match err {
+        ignore::Error::WithPath { path, .. } => Some(path),
+        ignore::Error::WithLineNumber { err, .. } | ignore::Error::WithDepth { err, .. } => {
+            walk_error_path(err)
+        }
+        ignore::Error::Partial(errs) if errs.len() == 1 => walk_error_path(&errs[0]),
+        _ => None,
+    }
+}
+
+/// Journalise une entrée de parcours illisible en `WARN` (toujours visible par
+/// défaut, SPEC-T04). Cas "Accès refusé" (`ErrorKind::PermissionDenied` — normalisé
+/// par la std lib depuis `EACCES` sur Unix et `ERROR_ACCESS_DENIED`/os error 5 sous
+/// Windows, très fréquent là-bas sur les dossiers système type `C:\Program Files\...`)
+/// : message court avec juste le chemin, sans le texte d'erreur OS verbeux. Les autres
+/// causes (chemin trop long, boucle de symlinks...) gardent le message détaillé
+/// d'origine — on ne sait pas les distinguer aussi proprement.
+fn log_walk_error(err: ignore::Error) {
+    let is_permission_denied = err
+        .io_error()
+        .is_some_and(|io_err| io_err.kind() == ErrorKind::PermissionDenied);
+
+    if is_permission_denied {
+        match walk_error_path(&err) {
+            Some(path) => {
+                warn!(path = %path.display(), "entrée ignorée lors du parcours (accès refusé)");
+            }
+            None => warn!(error = %err, "entrée ignorée lors du parcours (accès refusé)"),
+        }
+        return;
+    }
+
+    // Le chemin concerné est déjà inclus dans l'affichage de `err`
+    // (variantes `WithPath`/`WithLineNumber` de `ignore::Error`).
+    warn!(
+        error = %err,
+        "entrée ignorée lors du parcours (non lisible : permissions, chemin trop long, boucle de symlinks...)"
+    );
+}
 
 /// Parcourt récursivement `root` en respectant les règles `.gitignore` (sauf
 /// `no_ignore: true`, `--no-ignore`, SPEC-F02 — nécessaire pour ne pas manquer un
@@ -34,12 +79,7 @@ pub fn walk<'a>(
         .filter_map(|entry| match entry {
             Ok(entry) => Some(entry),
             Err(err) => {
-                // Le chemin concerné est déjà inclus dans l'affichage de `err`
-                // (variantes `WithPath`/`WithLineNumber` de `ignore::Error`).
-                warn!(
-                    error = %err,
-                    "entrée ignorée lors du parcours (non lisible : permissions, chemin trop long, boucle de symlinks...)"
-                );
+                log_walk_error(err);
                 None
             }
         })
@@ -71,10 +111,7 @@ pub fn walk_including_hidden<'a>(
         .filter_map(|entry| match entry {
             Ok(entry) => Some(entry),
             Err(err) => {
-                warn!(
-                    error = %err,
-                    "entrée ignorée lors du parcours (non lisible : permissions, chemin trop long, boucle de symlinks...)"
-                );
+                log_walk_error(err);
                 None
             }
         })
@@ -99,5 +136,45 @@ mod tests {
             .count();
         assert_eq!(found, 1);
         assert_eq!(progress.position(), 2); // le répertoire racine + package.json
+    }
+
+    #[test]
+    fn extracts_the_path_from_a_permission_denied_error() {
+        let io_err = std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "Access is denied. (os error 5)",
+        );
+        let err = ignore::Error::WithPath {
+            path: std::path::PathBuf::from(r"C:\Program Files\Foo"),
+            err: Box::new(ignore::Error::Io(io_err)),
+        };
+
+        assert_eq!(err.io_error().unwrap().kind(), ErrorKind::PermissionDenied);
+        assert_eq!(
+            walk_error_path(&err),
+            Some(Path::new(r"C:\Program Files\Foo"))
+        );
+    }
+
+    #[test]
+    fn does_not_flag_a_non_permission_io_error_as_access_denied() {
+        let io_err = std::io::Error::new(ErrorKind::InvalidInput, "chemin trop long");
+        let err = ignore::Error::WithPath {
+            path: std::path::PathBuf::from("/some/very/long/path"),
+            err: Box::new(ignore::Error::Io(io_err)),
+        };
+
+        assert_ne!(err.io_error().unwrap().kind(), ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn finds_no_path_for_a_symlink_loop_error() {
+        let err = ignore::Error::Loop {
+            ancestor: std::path::PathBuf::from("/a"),
+            child: std::path::PathBuf::from("/a/b/a"),
+        };
+
+        assert!(err.io_error().is_none());
+        assert_eq!(walk_error_path(&err), None);
     }
 }
