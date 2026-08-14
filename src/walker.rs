@@ -1,7 +1,8 @@
 //! Parcours de fichiers ultra-rapide via la crate `ignore` (SPEC-F02).
 
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use ignore::{DirEntry, WalkBuilder};
 use tracing::{debug, warn};
@@ -92,8 +93,10 @@ pub fn walk<'a>(
 
 /// Variante de [`walk`] incluant les fichiers et dossiers cachés, élagués par défaut
 /// par la crate `ignore` — ce qui rend `.env*` invisible au parcours standard. `.git/`
-/// reste exclu (jamais utile à inspecter, potentiellement volumineux). Réservée aux
-/// vérifications qui doivent explicitement voir les dotfiles (SPEC-F08). `no_ignore`
+/// reste exclu (jamais utile à inspecter, potentiellement volumineux) mais son chemin
+/// est capturé dans `git_dirs` avant l'élagage — capturé "gratuitement" pendant ce même
+/// parcours plutôt que via un parcours dédié (SPEC-F02/F08, voir `workspace.rs`).
+/// Réservée aux vérifications qui doivent explicitement voir les dotfiles. `no_ignore`
 /// a la même signification que pour [`walk`] (`--no-ignore`, SPEC-F02) : désactive les
 /// règles `.gitignore`/`.ignore`/parent, pour ne pas manquer un sous-dépôt cloné
 /// volontairement ignoré.
@@ -101,13 +104,22 @@ pub fn walk_including_hidden<'a>(
     root: &Path,
     progress: &'a DotProgress,
     no_ignore: bool,
+    git_dirs: Arc<Mutex<Vec<PathBuf>>>,
 ) -> impl Iterator<Item = DirEntry> + 'a {
     WalkBuilder::new(root)
         .hidden(false)
         .git_ignore(!no_ignore)
         .ignore(!no_ignore)
         .parents(!no_ignore)
-        .filter_entry(|entry| entry.file_name() != ".git")
+        .filter_entry(move |entry| {
+            if entry.file_name() != ".git" {
+                return true;
+            }
+            if let Ok(mut dirs) = git_dirs.lock() {
+                dirs.push(entry.path().to_path_buf());
+            }
+            false
+        })
         .build()
         .filter_map(|entry| match entry {
             Ok(entry) => Some(entry),

@@ -12,6 +12,7 @@ pub mod report;
 pub mod scan;
 pub mod simulate;
 pub mod walker;
+pub mod workspace;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,20 +21,22 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
 use cli::Cli;
-use discovery::discover;
 use ioc::IocDatabase;
 use progress::DotProgress;
 use report::Report;
 
 /// Orchestre une passe d'audit complète sur `cli.path` et retourne le rapport final :
 /// vérification de la disponibilité de npm (journalisée en INFO, `--npm-path` pour la
-/// forcer), chargement de la base IOC réseau + fallback local (SPEC-F01), audit des
-/// lockfiles existants (SPEC-F04 niveau 1), simulation `npm install` (SPEC-F04
-/// niveau 2, dans une copie isolée sous `working/` — jamais dans le projet original —
-/// entièrement ignorée si npm est indisponible, avec des processus concurrents
-/// bornés par un sémaphore dimensionné par `cli.workers`, SPEC-T01) et recherche
-/// active de signaux malveillants sur le disque (SPEC-F06/F07). Le parcours de
-/// fichiers et la simulation npm affichent chacun un flux de points texte
+/// forcer), chargement de la base IOC réseau + fallback local (SPEC-F01), un unique
+/// parcours du workspace combinant découverte de projets (SPEC-F03), scan passif
+/// (SPEC-F05/F08) et repérage des dépôts `.git` (SPEC-F08) — plutôt que trois
+/// parcours indépendants de la même arborescence, `workspace::walk_workspace` —
+/// audit des lockfiles existants (SPEC-F04 niveau 1), simulation `npm install`
+/// (SPEC-F04 niveau 2, dans une copie isolée sous `working/` — jamais dans le projet
+/// original — entièrement ignorée si npm est indisponible, avec des processus
+/// concurrents bornés par un sémaphore dimensionné par `cli.workers`, SPEC-T01) et
+/// recherche active de signaux malveillants sur le disque (SPEC-F06/F07). Le parcours
+/// de fichiers et la simulation npm affichent chacun un flux de points texte
 /// (`progress::DotProgress`, plus robuste qu'une barre `indicatif` sur certains
 /// terminaux Windows) — désactivables via `--no-color` (SPEC-T02).
 pub async fn run(cli: Cli) -> anyhow::Result<Report> {
@@ -55,7 +58,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
 
     info!(path = %cli.path.display(), "lancement de l'analyse");
     let walk_progress = DotProgress::new(!cli.no_color);
-    let projects = discover(&cli.path, &walk_progress, cli.no_ignore);
+    let workspace =
+        workspace::walk_workspace(&cli.path, &walk_progress, cli.no_ignore, &iocs_config);
     walk_progress.finish();
     // Le compte de fichiers ("nombre de fichier à analyser", SPEC-T04) n'est connu
     // qu'une fois le parcours terminé : il est affiché à la suite des points de
@@ -65,9 +69,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         eprintln!(
             "{} fichier(s) analysé(s), {} projet(s) découvert(s)",
             walk_progress.position(),
-            projects.len()
+            workspace.projects.len()
         );
     }
+    let projects = workspace.projects;
+    let install_command_mentions = workspace.install_command_mentions;
 
     info!(path = %cli.path.display(), "Analyse - phase audit projects");
     let mut findings: Vec<_> = projects
@@ -80,14 +86,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         .collect();
 
     info!(path = %cli.path.display(), "Analyse - phase hunting install scripts");
-    let mut threats = hunt::hunt(&cli.path, &projects, &iocs_config);
+    let mut threats = hunt::hunt(&cli.path, &projects, &iocs_config, &workspace.git_dirs);
     let install_scripts: Vec<_> = projects
         .iter()
         .flat_map(|project| hunt::inventory_install_scripts(&project.root))
         .collect();
-    let (passive_scan_signals, install_command_mentions) =
-        scan::scan_workspace(&cli.path, cli.no_ignore, &iocs_config);
-    threats.extend(passive_scan_signals);
+    threats.extend(workspace.threat_signals);
     threats.extend(
         projects
             .iter()

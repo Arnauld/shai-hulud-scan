@@ -14,30 +14,41 @@ pub struct Project {
     pub has_yarn_lock: bool,
 }
 
+/// Construit un `Project` à partir du chemin d'un `package.json` visité, s'il ne se
+/// trouve pas sous un `node_modules` (paquet déjà installé, pas une racine de projet
+/// — vérifié directement par nom/version déclarés, `audit::audit_installed_packages`,
+/// sans lockfile ni simulation). Fonction pure sans notion de parcours : réutilisée à
+/// la fois par [`discover`] (son propre parcours, pour compatibilité/tests unitaires)
+/// et par `workspace::walk_workspace` (parcours unifié, SPEC-F02).
+pub fn project_from_package_json(path: &Path) -> Option<Project> {
+    if path.file_name().is_none_or(|name| name != "package.json") {
+        return None;
+    }
+    if path
+        .components()
+        .any(|component| component.as_os_str() == "node_modules")
+    {
+        return None;
+    }
+    let dir = path.parent()?.to_path_buf();
+    let has_npm_lock = dir.join("package-lock.json").exists();
+    let has_yarn_lock = dir.join("yarn.lock").exists();
+    Some(Project {
+        root: dir,
+        has_npm_lock,
+        has_yarn_lock,
+    })
+}
+
 /// Recherche récursivement tous les projets npm/yarn sous `root`. `progress` reflète
-/// l'avancement du parcours de fichiers sous-jacent (SPEC-T02). Les `package.json`
-/// situés sous un `node_modules` sont exclus : ce sont des paquets déjà installés,
-/// pas des racines de projet — ils sont vérifiés directement par leur nom/version
-/// déclarés (`audit::audit_installed_packages`), sans lockfile ni simulation.
+/// l'avancement du parcours de fichiers sous-jacent (SPEC-T02). Effectue son propre
+/// parcours (conservée pour compatibilité/tests unitaires en isolation) — le chemin de
+/// production (`lib.rs::run`) passe par `workspace::walk_workspace`, qui appelle
+/// [`project_from_package_json`] pour chaque entrée d'un unique parcours partagé avec
+/// le scan passif (SPEC-F05/F08), plutôt que de parcourir le disque une seconde fois.
 pub fn discover(root: &Path, progress: &DotProgress, no_ignore: bool) -> Vec<Project> {
     let projects: Vec<Project> = crate::walker::walk(root, progress, no_ignore)
-        .filter(|entry| entry.file_name() == "package.json")
-        .filter(|entry| {
-            !entry
-                .path()
-                .components()
-                .any(|component| component.as_os_str() == "node_modules")
-        })
-        .filter_map(|entry| entry.path().parent().map(Path::to_path_buf))
-        .map(|dir| {
-            let has_npm_lock = dir.join("package-lock.json").exists();
-            let has_yarn_lock = dir.join("yarn.lock").exists();
-            Project {
-                root: dir,
-                has_npm_lock,
-                has_yarn_lock,
-            }
-        })
+        .filter_map(|entry| project_from_package_json(entry.path()))
         .collect();
 
     for project in &projects {

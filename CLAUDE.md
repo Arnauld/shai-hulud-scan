@@ -13,9 +13,10 @@ Toutes les specs fonctionnelles (SPEC-F01 à F07) et techniques (SPEC-T01 à T03
 - `iocs` + `iocs.toml` (racine du dépôt) — signatures de Threat Hunting externalisées (fichiers/hashes/marqueurs/regex, SPEC-F06/F07/F08). `iocs.toml` est embarqué tel quel dans le binaire (`include_str!`) comme valeurs par défaut ; `--iocs-file <path>` fournit un fichier qui fusionne champ par champ par-dessus (SPEC-T06). `hunt`/`scan`/`registry` reçoivent la config résolue en paramètre plutôt que de lire des constantes en dur.
 - `walker` — parcours de fichiers via la crate `ignore` (SPEC-F02).
 - `progress` — indicateur de progression texte (`DotProgress`), utilisé par le parcours de fichiers et la simulation npm (SPEC-T02).
-- `discovery` — détection des projets npm/yarn (SPEC-F03).
+- `workspace` — parcours **unique** du workspace (`walk_workspace`) combinant découverte de projets, scan passif et repérage des dépôts `.git` (SPEC-F02/F03/F05/F08), au lieu de trois parcours indépendants — chemin utilisé par `lib.rs::run`.
+- `discovery` — détection des projets npm/yarn (SPEC-F03) ; `discover()` fait son propre parcours, gardée pour les tests unitaires en isolation (plus utilisée en production, voir `workspace` ci-dessus).
 - `audit` — analyse des lockfiles existants + simulation `npm install --package-lock-only` (SPEC-F04).
-- `scan` — détection passive de commandes d'install dans le code source via `regex` (SPEC-F05).
+- `scan` — détection passive de commandes d'install dans le code source via `regex` (SPEC-F05) ; `scan_workspace()` idem `discover()` (tests uniquement).
 - `hunt` — recherche active de signaux malveillants sur disque (fichiers payload, hooks, persistance macOS/CI) (SPEC-F06/F07).
 - `report` — sortie console ANSI, `--report-file`, `--json` (SPEC-T02).
 - `cli` — point d'entrée, orchestration `tokio` + sémaphore de concurrence (SPEC-T01).

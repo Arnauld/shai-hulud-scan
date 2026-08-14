@@ -55,7 +55,19 @@ Pour le parcours du système de fichiers, le binaire Rust doit s'affranchir des 
     silencieusement absent de l'analyse.
 *   **Fichiers cachés (`.env*`) :** Le scan passif (SPEC-F05/F08) a besoin de voir les
     dotfiles, élagués par défaut par la crate `ignore` — une variante de parcours dédiée
-    inclut les fichiers/dossiers cachés (`.git/` reste exclu, jamais utile à inspecter).
+    inclut les fichiers/dossiers cachés (`.git/` reste exclu de la descente, jamais utile
+    à inspecter, mais son chemin est capturé avant l'élagage — voir parcours unifié ci-dessous).
+*   **Parcours unifié (`workspace::walk_workspace`) :** La découverte de projets (SPEC-F03), le
+    scan passif (SPEC-F05/F08) et le repérage des dépôts `.git` (SPEC-F08 point 10) partagent
+    **un seul** passage sur l'arborescence plutôt que trois parcours indépendants — coût
+    significatif sur une racine sans `.gitignore` pour élaguer quoi que ce soit (`C:\`, `/`).
+    Chaque entrée visitée est examinée par les deux traitements (est-ce un `package.json` hors
+    `node_modules` ? le contenu contient-il un marqueur/une mention/un secret ?) ; les dossiers
+    `.git` rencontrés sont collectés par leur chemin (capturé par le filtre d'élagage lui-même,
+    sans coût de parcours supplémentaire) pour une analyse a posteriori
+    (`hunt::scan_git_configs`), sans troisième parcours dédié. `discovery::discover` et
+    `scan::scan_workspace` (leurs propres parcours indépendants) restent disponibles pour les
+    tests unitaires en isolation, mais ne sont plus utilisés par le chemin de production.
 
 voir https://github.com/BurntSushi/ripgrep/blob/master/Cargo.toml
 
@@ -241,9 +253,10 @@ SPEC-F06/F07 :
     présence de jetons/secrets en clair.
 9.  **Divergence lockfile / installé :** Comparer les versions déclarées dans le lockfile avec
     celles réellement présentes dans `node_modules`, signaler les paquets divergents.
-10. **Identifiants en clair dans un remote git HTTP :** Rechercher récursivement tous les dépôts
-    `.git` du workspace (sans jamais descendre dans `.git/` lui-même ni dans `node_modules`) et
-    vérifier, pour chaque section `[remote "..."]` de leur `config`, si l'URL déclarée utilise le
+10. **Identifiants en clair dans un remote git HTTP :** Pour chaque dépôt `.git` repéré par le
+    parcours unifié du workspace (`workspace::walk_workspace`, SPEC-F02 — capturé au passage,
+    sans jamais y descendre, sans parcours dédié), vérifier, pour chaque section `[remote "..."]`
+    de son `config`, si l'URL déclarée utilise le
     protocole `http://` (non chiffré) **et** porte des identifiants en clair dans l'URL elle-même
     (userinfo `http://user:pass@host/...` ou `http://token@host/...`). Le secret trouvé n'est
     jamais reporté en clair dans le rapport (identifiants masqués, `http://***@host/...`) — même

@@ -66,8 +66,14 @@ pub struct ThreatSignal {
 
 /// Exécute l'ensemble des vérifications de Threat Hunting (SPEC-F06/F07) sur le
 /// workspace et chaque projet Node.js identifié, selon les signatures de `config`
-/// (`iocs.toml`, SPEC-F08).
-pub fn hunt(workspace_root: &Path, projects: &[Project], config: &IocsConfig) -> Vec<ThreatSignal> {
+/// (`iocs.toml`, SPEC-F08). `git_dirs` (dépôts `.git` du workspace) vient du parcours
+/// unifié (`workspace::walk_workspace`, SPEC-F02) plutôt que d'un parcours dédié.
+pub fn hunt(
+    workspace_root: &Path,
+    projects: &[Project],
+    config: &IocsConfig,
+    git_dirs: &[PathBuf],
+) -> Vec<ThreatSignal> {
     let mut signals = Vec::new();
 
     signals.extend(scan_root(workspace_root, config));
@@ -88,7 +94,7 @@ pub fn hunt(workspace_root: &Path, projects: &[Project], config: &IocsConfig) ->
     signals.extend(scan_claude_user_config());
     signals.extend(scan_git_hook_persistence(config));
     signals.extend(scan_npmrc_secrets(config));
-    signals.extend(scan_git_remote_credentials(workspace_root));
+    signals.extend(scan_git_configs(git_dirs));
 
     signals.sort_by(|a, b| a.path.cmp(&b.path));
     signals.dedup();
@@ -533,42 +539,18 @@ fn scan_npmrc_secrets_at(path: &Path, secret_keys: &[String]) -> Vec<ThreatSigna
         .collect()
 }
 
-/// Vérifie tous les dépôts `.git` du workspace (SPEC-F08) pour un remote en HTTP
-/// (pas HTTPS) portant des identifiants en clair dans l'URL elle-même
-/// (`http://user:pass@host/...`). Ne descend jamais dans `.git/` lui-même (objets/logs
-/// potentiellement énormes, aucun intérêt à les parcourir) ni dans `node_modules`
-/// (jamais de dépôt pertinent à y trouver, coûteux à traverser).
-pub fn scan_git_remote_credentials(workspace_root: &Path) -> Vec<ThreatSignal> {
-    let mut signals = Vec::new();
-    find_git_configs(workspace_root, &mut signals);
-    signals
-}
-
-fn find_git_configs(dir: &Path, signals: &mut Vec<ThreatSignal>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let path = entry.path();
-        let name = entry.file_name();
-
-        if name == ".git" {
-            signals.extend(scan_git_config(&path.join("config")));
-            continue;
-        }
-        if name == "node_modules" {
-            continue;
-        }
-
-        find_git_configs(&path, signals);
-    }
+/// Vérifie chaque dépôt `.git` du workspace pour un remote en HTTP (pas HTTPS) portant
+/// des identifiants en clair dans l'URL elle-même (`http://user:pass@host/...`,
+/// SPEC-F08). `git_dirs` vient du parcours unifié du workspace
+/// (`workspace::walk_workspace`, SPEC-F02) : cette fonction ne parcourt plus elle-même
+/// le disque — les chemins des dossiers `.git` ont déjà été capturés "gratuitement"
+/// pendant ce même parcours (`walker::walk_including_hidden`, qui les élague sans
+/// jamais y descendre) plutôt que via un troisième parcours dédié.
+pub fn scan_git_configs(git_dirs: &[PathBuf]) -> Vec<ThreatSignal> {
+    git_dirs
+        .iter()
+        .flat_map(|git_dir| scan_git_config(&git_dir.join("config")))
+        .collect()
 }
 
 /// Analyse texte volontairement simple d'un `.git/config` (même style que
@@ -994,7 +976,7 @@ mod tests {
             has_yarn_lock: false,
         }];
 
-        let signals = hunt(dir.path(), &projects, &config);
+        let signals = hunt(dir.path(), &projects, &config, &[]);
         assert_eq!(
             signals
                 .iter()
@@ -1054,7 +1036,7 @@ mod tests {
         )
         .unwrap();
 
-        let signals = scan_git_remote_credentials(dir.path());
+        let signals = scan_git_configs(&[git_dir]);
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].category, ThreatCategory::ExposedSecret);
         assert!(!signals[0].detail.contains("secret-token"));
@@ -1072,7 +1054,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(scan_git_remote_credentials(dir.path()).is_empty());
+        assert!(scan_git_configs(&[git_dir]).is_empty());
     }
 
     #[test]
@@ -1086,28 +1068,15 @@ mod tests {
         )
         .unwrap();
 
-        assert!(scan_git_remote_credentials(dir.path()).is_empty());
+        assert!(scan_git_configs(&[git_dir]).is_empty());
     }
 
     #[test]
-    fn never_descends_into_git_or_node_modules_directories() {
+    fn ignores_a_git_dir_with_no_config_file() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
-        std::fs::write(
-            dir.path().join(".git").join("config"),
-            "[remote \"origin\"]\n\turl = http://user:pw@example.com/x.git\n",
-        )
-        .unwrap();
-        let ignored_nested_git = dir.path().join("node_modules").join(".git");
-        std::fs::create_dir_all(&ignored_nested_git).unwrap();
-        std::fs::write(
-            ignored_nested_git.join("config"),
-            "[remote \"origin\"]\n\turl = http://user:pw@example.com/should-not-be-found.git\n",
-        )
-        .unwrap();
+        let git_dir = dir.path().join("repo").join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
 
-        let signals = scan_git_remote_credentials(dir.path());
-        assert_eq!(signals.len(), 1);
-        assert!(signals[0].detail.contains("example.com/x.git"));
+        assert!(scan_git_configs(&[git_dir]).is_empty());
     }
 }

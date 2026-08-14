@@ -8,6 +8,7 @@
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::comments::{comment_spans, is_within_comment, language_for_path};
 use crate::hunt::{ThreatCategory, ThreatSignal};
@@ -107,14 +108,85 @@ fn has_literal_dotenv_secret(content: &str) -> bool {
     })
 }
 
+/// Résultat du scan passif d'un seul fichier (SPEC-F05/F08).
+#[derive(Debug, Default)]
+pub struct FileScanResult {
+    pub threat_signals: Vec<ThreatSignal>,
+    pub install_mention: Option<PathBuf>,
+}
+
+/// Scanne un seul fichier déjà présent sur disque (extensions exclues, SPEC-F05) à la
+/// recherche de marqueurs C2 connus, d'une mention d'installation npm/yarn directe et,
+/// pour les `.env*`, de secrets en clair (SPEC-F08). `None` si `path` est exclu ou
+/// illisible. Fonction pure sans notion de parcours : réutilisée à la fois par
+/// [`scan_workspace`] (son propre parcours, pour compatibilité/tests unitaires) et par
+/// `workspace::walk_workspace` (parcours unifié du workspace, SPEC-F02) qui l'appelle
+/// pour chaque entrée d'un seul passage partagé avec la découverte de projets.
+pub fn scan_file(path: &Path, config: &IocsConfig) -> Option<FileScanResult> {
+    if is_excluded(path, config) {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+
+    let mut result = FileScanResult::default();
+
+    let spans = language_for_path(path).map(|lang| comment_spans(&content, lang));
+
+    let install_matches = install_command_matches(&content, config);
+    if !install_matches.is_empty() {
+        let all_in_comment = match &spans {
+            Some(spans) => install_matches
+                .iter()
+                .all(|(start, end)| is_within_comment(spans, *start, *end)),
+            None => false,
+        };
+        // Une mention trouvée uniquement en commentaire (ex. « // npm install après
+        // clonage ») est un indice déjà bénin (Debug uniquement) rendu plus bénin
+        // encore par le contexte commentaire : ne pas la reporter du tout.
+        if !all_in_comment {
+            result.install_mention = Some(path.to_path_buf());
+        }
+    }
+
+    let (real_markers, comment_only_markers) =
+        classify_c2_markers(&content, config, spans.as_deref());
+    if !real_markers.is_empty() {
+        result.threat_signals.push(ThreatSignal {
+            category: ThreatCategory::KnownC2Marker,
+            detail: format!("marqueur(s) C2 connu(s) : {}", real_markers.join(", ")),
+            path: path.to_path_buf(),
+        });
+    }
+    if !comment_only_markers.is_empty() {
+        result.threat_signals.push(ThreatSignal {
+            category: ThreatCategory::CommandFoundInComment,
+            detail: format!(
+                "marqueur(s) C2 connu(s) trouvé(s) uniquement en commentaire, sévérité abaissée : {}",
+                comment_only_markers.join(", ")
+            ),
+            path: path.to_path_buf(),
+        });
+    }
+
+    if is_dotenv_file(path) && has_literal_dotenv_secret(&content) {
+        result.threat_signals.push(ThreatSignal {
+            category: ThreatCategory::ExposedSecret,
+            detail: "fichier .env avec valeur(s) en clair détecté dans le workspace".to_string(),
+            path: path.to_path_buf(),
+        });
+    }
+
+    Some(result)
+}
+
 /// Scanne tous les fichiers du workspace, **dotfiles inclus** (hors extensions
 /// exclues, SPEC-F05 — l'inclusion des fichiers cachés est nécessaire pour voir les
-/// `.env*`, normalement élagués par le parcours standard, SPEC-F08) à la recherche de
-/// marqueurs C2 connus (SPEC-F08), de fichiers `.env*` porteurs de secrets en clair
-/// (SPEC-F08, tous deux retournés comme `ThreatSignal` directement exploitables) et
-/// d'instructions d'installation directes mentionnées (SPEC-F05, simple indice
-/// contextuel — souvent bénin, ex. un README — retourné séparément, pas un
-/// `ThreatSignal`).
+/// `.env*`, normalement élagués par le parcours standard, SPEC-F08). Effectue son
+/// propre parcours (conservée pour compatibilité/tests unitaires en isolation) — le
+/// chemin de production (`lib.rs::run`) passe par `workspace::walk_workspace`, qui
+/// appelle [`scan_file`] pour chaque entrée d'un unique parcours partagé avec la
+/// découverte de projets (SPEC-F02), plutôt que de parcourir le disque une seconde
+/// fois.
 pub fn scan_workspace(
     workspace_root: &Path,
     no_ignore: bool,
@@ -124,60 +196,17 @@ pub fn scan_workspace(
     let mut threat_signals = Vec::new();
     let mut install_mentions = Vec::new();
 
-    for entry in crate::walker::walk_including_hidden(workspace_root, &progress, no_ignore) {
+    let git_dirs = Arc::new(Mutex::new(Vec::new()));
+    for entry in
+        crate::walker::walk_including_hidden(workspace_root, &progress, no_ignore, git_dirs)
+    {
         let path = entry.path();
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) || is_excluded(path, config) {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(path) else {
-            continue;
-        };
-
-        let spans = language_for_path(path).map(|lang| comment_spans(&content, lang));
-
-        let install_matches = install_command_matches(&content, config);
-        if !install_matches.is_empty() {
-            let all_in_comment = match &spans {
-                Some(spans) => install_matches
-                    .iter()
-                    .all(|(start, end)| is_within_comment(spans, *start, *end)),
-                None => false,
-            };
-            // Une mention trouvée uniquement en commentaire (ex. « // npm install
-            // après clonage ») est un indice déjà bénin (Debug uniquement) rendu plus
-            // bénin encore par le contexte commentaire : ne pas la reporter du tout.
-            if !all_in_comment {
-                install_mentions.push(path.to_path_buf());
-            }
-        }
-
-        let (real_markers, comment_only_markers) =
-            classify_c2_markers(&content, config, spans.as_deref());
-        if !real_markers.is_empty() {
-            threat_signals.push(ThreatSignal {
-                category: ThreatCategory::KnownC2Marker,
-                detail: format!("marqueur(s) C2 connu(s) : {}", real_markers.join(", ")),
-                path: path.to_path_buf(),
-            });
-        }
-        if !comment_only_markers.is_empty() {
-            threat_signals.push(ThreatSignal {
-                category: ThreatCategory::CommandFoundInComment,
-                detail: format!(
-                    "marqueur(s) C2 connu(s) trouvé(s) uniquement en commentaire, sévérité abaissée : {}",
-                    comment_only_markers.join(", ")
-                ),
-                path: path.to_path_buf(),
-            });
-        }
-
-        if is_dotenv_file(path) && has_literal_dotenv_secret(&content) {
-            threat_signals.push(ThreatSignal {
-                category: ThreatCategory::ExposedSecret,
-                detail: "fichier .env avec valeur(s) en clair détecté dans le workspace"
-                    .to_string(),
-                path: path.to_path_buf(),
-            });
+        if let Some(result) = scan_file(path, config) {
+            threat_signals.extend(result.threat_signals);
+            install_mentions.extend(result.install_mention);
         }
     }
 
