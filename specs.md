@@ -266,15 +266,16 @@ SPEC-F06/F07 :
 *   **Limiteur de Concurrence (Sémaphore) :** Le lancement de processus lourds (`npm install`) doit être encadré par un sémaphore (`tokio::sync::Semaphore`) configurable (par exemple, 4 travailleurs max par défaut) pour éviter de saturer le disque ou les E/S du système, particulièrement sous WSL.
 
 ### SPEC-T02 - Indicateurs de progression et formats de sortie (CLI UX)
-*   **Rapports Visuels :** Utiliser la crate **`indicatif`** pour afficher une barre de progression
-    interactive et dynamique lors de la simulation npm.
-*   **Parcours de fichiers — indicateur texte dédié :** Le parcours (SPEC-F02) n'utilise **pas**
+*   **Indicateur texte dédié (`progress::DotProgress`) :** Le parcours de fichiers (SPEC-F02) et la
+    simulation `npm install` (SPEC-F04) affichent chacun un simple point (`.`) par entrée/simulation
+    traitée, ajouté sur la même ligne (stderr), avec un récapitulatif de la position tous les
+    `BATCH_SIZE` points puis un retour à la ligne (et un dernier récapitulatif `reste/total` en fin de
+    flux si le compte ne tombe pas juste sur un multiple de `BATCH_SIZE`). N'utilise **pas** la crate
     `indicatif` : sur certains terminaux Windows, sa gestion du curseur/redessin de ligne ne
-    fonctionne pas correctement et produit une sortie illisible, entrecoupée des lignes de log.
-    `progress::DotProgress` affiche à la place un simple point (`.`) par entrée visitée, ajouté sur
-    la même ligne (stderr), avec un récapitulatif `50/<total>` tous les 50 points puis un retour à la
-    ligne — ne dépend d'aucune fonctionnalité terminal au-delà d'un `print!`/flush basique, garanti
-    de fonctionner partout. Désactivé par `--no-color`, comme la barre `indicatif` de la simulation.
+    fonctionne pas correctement et produit une sortie illisible, entrecoupée des lignes de log —
+    `DotProgress` ne dépend d'aucune fonctionnalité terminal au-delà d'un `print!`/flush basique,
+    garanti de fonctionner partout, y compris en sortie redirigée. Désactivé par `--no-color`, pour
+    les deux usages.
 *   **Formats de Restitution :**
     *   **Console :** Sortie interactive colorée avec des codes ANSI (pouvant être désactivée via `--no-color`).
     *   **Fichier Rapport :** Permettre l'écriture d'un rapport d'audit propre en texte brut via `--report-file <path>`, épuré de tout code ANSI.
@@ -288,7 +289,7 @@ L'outil doit compiler sous forme de binaire unique, statique et autonome, sans n
     *   Windows (binaire autonome `.exe`).
 
 ### SPEC-T04 - Journalisation (Logging)
-L'outil doit intégrer une journalisation structurée, distincte des barres de progression `indicatif` (SPEC-T02) et du rapport d'audit final (console/`--report-file`/`--json`) : les logs sont un flux diagnostique séparé, pas une restitution des résultats.
+L'outil doit intégrer une journalisation structurée, distincte des indicateurs de progression `DotProgress` (SPEC-T02) et du rapport d'audit final (console/`--report-file`/`--json`) : les logs sont un flux diagnostique séparé, pas une restitution des résultats.
 *   **Crate Recommandée :** `tracing` + `tracing-subscriber`, cohérent avec l'architecture asynchrone `tokio` (SPEC-T01) et permettant d'instrumenter le cycle de vie de chaque étape (téléchargement IOC, parcours de fichiers, audit par projet, simulation npm, Threat Hunting) via des spans.
 *   **Sortie :** Toujours sur **stderr**, jamais sur stdout, afin de ne jamais polluer une sortie `--json` redirigée dans un pipeline CI/CD. Respecte `--no-color` pour désactiver la coloration des logs comme celle du rapport.
 *   **Niveaux :**

@@ -16,7 +16,6 @@ pub mod walker;
 use std::sync::Arc;
 use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
@@ -33,10 +32,10 @@ use report::Report;
 /// niveau 2, dans une copie isolée sous `working/` — jamais dans le projet original —
 /// entièrement ignorée si npm est indisponible, avec des processus concurrents
 /// bornés par un sémaphore dimensionné par `cli.workers`, SPEC-T01) et recherche
-/// active de signaux malveillants sur le disque (SPEC-F06/F07). La simulation npm
-/// affiche une barre de progression `indicatif` ; le parcours de fichiers affiche un
-/// flux de points texte (`progress::DotProgress`, plus robuste que `indicatif` sur
-/// certains terminaux Windows) — tous deux désactivables via `--no-color` (SPEC-T02).
+/// active de signaux malveillants sur le disque (SPEC-F06/F07). Le parcours de
+/// fichiers et la simulation npm affichent chacun un flux de points texte
+/// (`progress::DotProgress`, plus robuste qu'une barre `indicatif` sur certains
+/// terminaux Windows) — désactivables via `--no-color` (SPEC-T02).
 pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     let npm_command = simulate::resolve_npm_command(cli.npm_path.as_deref());
     let npm_available = simulate::check_npm_available(&npm_command).await;
@@ -101,14 +100,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     let db = Arc::new(db);
     let semaphore = Arc::new(Semaphore::new(cli.workers.max(1)));
     let npm_timeout = Duration::from_secs(cli.npm_timeout);
-    let simulation_progress = bar(
-        cli.no_color,
-        if npm_available {
-            project_count as u64
-        } else {
-            0
-        },
-    )?;
+    let simulation_progress = DotProgress::new(!cli.no_color);
 
     if npm_available {
         let mut simulations = tokio::task::JoinSet::new();
@@ -131,7 +123,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         }
 
         while let Some(outcome) = simulations.join_next().await {
-            simulation_progress.inc(1);
+            simulation_progress.inc();
             if let Ok(Ok(simulated)) = outcome {
                 findings.extend(simulated);
             }
@@ -139,7 +131,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     } else {
         debug!("simulation npm install ignorée pour l'ensemble du scan (npm indisponible)");
     }
-    simulation_progress.finish_and_clear();
+    simulation_progress.finish();
+    if !cli.no_color && npm_available {
+        eprintln!(
+            "{} simulation(s) npm install effectuée(s)",
+            simulation_progress.position()
+        );
+    }
 
     // DEBUG (pas INFO) : le rapport lui-même (stdout / --report-file / --json) est
     // déjà la restitution visible du résultat, inutile de la dupliquer en console.
@@ -153,16 +151,4 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         .with_install_scripts(install_scripts)
         .with_install_command_mentions(install_command_mentions)
         .with_project_count(project_count))
-}
-
-/// Barre déterminée (longueur connue à l'avance) pour la simulation npm (SPEC-T02).
-fn bar(no_color: bool, len: u64) -> anyhow::Result<ProgressBar> {
-    if no_color {
-        return Ok(ProgressBar::hidden());
-    }
-    let progress = ProgressBar::new(len);
-    progress.set_style(ProgressStyle::with_template(
-        "{bar:40.cyan/blue} {pos}/{len} simulation(s) npm install",
-    )?);
-    Ok(progress)
 }

@@ -6,12 +6,13 @@
 **La source de vérité fonctionnelle est `specs.md`.** Toujours vérifier ce fichier avant d'implémenter une fonctionnalité ; le mettre à jour si le comportement implémenté diverge (nouvelle variante du ver, nouveau flag CLI, etc.).
 
 ## État du dépôt
-Toutes les specs fonctionnelles (SPEC-F01 à F07) et techniques (SPEC-T01 à T03) sont implémentées : chargement IOC réseau + fallback + `--offline`, parcours `ignore`, découverte npm/yarn, audit lockfiles + simulation `npm install`, scan regex, moteur de Threat Hunting, sortie console colorée/JSON/rapport-fichier avec barres `indicatif`, et packaging cross-plateforme (voir ci-dessous).
+Toutes les specs fonctionnelles (SPEC-F01 à F07) et techniques (SPEC-T01 à T03) sont implémentées : chargement IOC réseau + fallback + `--offline`, parcours `ignore`, découverte npm/yarn, audit lockfiles + simulation `npm install`, scan regex, moteur de Threat Hunting, sortie console colorée/JSON/rapport-fichier avec indicateurs de progression texte `progress::DotProgress`, et packaging cross-plateforme (voir ci-dessous).
 
 ## Architecture cible (voir specs.md pour le détail)
 - `ioc` — chargement/parse de la base CSV d'IOC (réseau + fallback local), `HashMap<String, Vec<String>>` (SPEC-F01). Distinct de `iocs`/`iocs.toml` ci-dessous (paquets npm compromis vs. signatures de Threat Hunting).
 - `iocs` + `iocs.toml` (racine du dépôt) — signatures de Threat Hunting externalisées (fichiers/hashes/marqueurs/regex, SPEC-F06/F07/F08). `iocs.toml` est embarqué tel quel dans le binaire (`include_str!`) comme valeurs par défaut ; `--iocs-file <path>` fournit un fichier qui fusionne champ par champ par-dessus (SPEC-T06). `hunt`/`scan`/`registry` reçoivent la config résolue en paramètre plutôt que de lire des constantes en dur.
 - `walker` — parcours de fichiers via la crate `ignore` (SPEC-F02).
+- `progress` — indicateur de progression texte (`DotProgress`), utilisé par le parcours de fichiers et la simulation npm (SPEC-T02).
 - `discovery` — détection des projets npm/yarn (SPEC-F03).
 - `audit` — analyse des lockfiles existants + simulation `npm install --package-lock-only` (SPEC-F04).
 - `scan` — détection passive de commandes d'install dans le code source via `regex` (SPEC-F05).
@@ -20,7 +21,7 @@ Toutes les specs fonctionnelles (SPEC-F01 à F07) et techniques (SPEC-T01 à T03
 - `cli` — point d'entrée, orchestration `tokio` + sémaphore de concurrence (SPEC-T01).
 
 ## Crates de référence imposées par la spec
-`tokio` (async/parallélisme), `ignore` (parcours fichiers, moteur ripgrep), `regex`, `indicatif` + `console` (progress bars, ANSI), `clap` (CLI, derive), `serde`/`serde_json`/`csv` (JSON, parsing IOC), `reqwest` (rustls, téléchargement IOC), `anyhow`/`thiserror` (erreurs), `dirs` (chemins `~/Library/LaunchAgents`).
+`tokio` (async/parallélisme), `ignore` (parcours fichiers, moteur ripgrep), `regex`, `console` (ANSI), `clap` (CLI, derive), `serde`/`serde_json`/`csv`/`toml` (JSON, parsing IOC, `iocs.toml`), `reqwest` (rustls, téléchargement IOC), `anyhow`/`thiserror` (erreurs), `dirs` (chemins `~/Library/LaunchAgents`). Pas de dépendance externe pour les indicateurs de progression (`progress::DotProgress`, texte simple — `indicatif` a été retiré, son rendu ne fonctionnant pas correctement sur certains terminaux Windows).
 
 ## Commandes
 ```bash

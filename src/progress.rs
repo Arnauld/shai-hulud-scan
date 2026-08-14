@@ -9,7 +9,7 @@
 use std::cell::Cell;
 use std::io::Write;
 
-const BATCH_SIZE: u64 = 50;
+const BATCH_SIZE: u64 = 80;
 
 /// Compteur de progression texte. `enabled: false` (ex. `--no-color`, ou usage
 /// interne silencieux comme l'audit `node_modules`) rend `inc`/`finish` no-op côté
@@ -40,7 +40,7 @@ impl DotProgress {
         eprint!(".");
         let _ = std::io::stderr().flush();
         if next.is_multiple_of(BATCH_SIZE) {
-            eprintln!(" {BATCH_SIZE}/{next}");
+            eprintln!(" {next}");
         }
     }
 

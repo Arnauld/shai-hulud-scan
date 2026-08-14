@@ -10,7 +10,6 @@ console = "0.16.4"
 csv = "1.4.0"
 dirs = "6.0.0"
 ignore = "0.4.30"
-indicatif = "0.18.4"
 regex = "1.13.1"
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "json", "charset", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
