@@ -291,6 +291,12 @@ SPEC-F06/F07 :
     redirigée. **Non désactivé par `--no-color`** : ce flag ne contrôle que les codes ANSI de
     couleur (console, rapport) — `DotProgress` n'en a jamais émis, les deux réglages sont
     indépendants.
+*   **En-tête du rapport :** Chaque rapport (texte et JSON) commence par un en-tête `ReportHeader` —
+    date/heure du scan (UTC, pas l'heure locale : la détection du fuseau local n'est pas fiable sur
+    les binaires musl statiques minimaux, SPEC-T03) et nom + version de l'outil
+    (`shai-hulud-guard <version>`, `CARGO_PKG_VERSION`) — utile pour tracer quand et avec quelle
+    version un rapport archivé a été produit. Toujours affiché, quel que soit `--report-level`
+    (métadonnée du rapport, pas du contenu filtrable par niveau).
 *   **Formats de Restitution :**
     *   **Console :** Sortie interactive colorée avec des codes ANSI (pouvant être désactivée via `--no-color`).
     *   **Fichier Rapport :** Permettre l'écriture d'un rapport d'audit propre en texte brut via `--report-file <path>`, épuré de tout code ANSI.

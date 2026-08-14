@@ -22,7 +22,7 @@ Toutes les specs fonctionnelles (SPEC-F01 à F07) et techniques (SPEC-T01 à T03
 - `cli` — point d'entrée, orchestration `tokio` + sémaphore de concurrence (SPEC-T01).
 
 ## Crates de référence imposées par la spec
-`tokio` (async/parallélisme), `ignore` (parcours fichiers, moteur ripgrep), `regex`, `console` (ANSI), `clap` (CLI, derive), `serde`/`serde_json`/`csv`/`toml` (JSON, parsing IOC, `iocs.toml`), `reqwest` (rustls, téléchargement IOC), `anyhow`/`thiserror` (erreurs), `dirs` (chemins `~/Library/LaunchAgents`). Pas de dépendance externe pour les indicateurs de progression (`progress::DotProgress`, texte simple — `indicatif` a été retiré, son rendu ne fonctionnant pas correctement sur certains terminaux Windows).
+`tokio` (async/parallélisme), `ignore` (parcours fichiers, moteur ripgrep), `regex`, `console` (ANSI), `clap` (CLI, derive), `serde`/`serde_json`/`csv`/`toml` (JSON, parsing IOC, `iocs.toml`), `reqwest` (rustls, téléchargement IOC), `anyhow`/`thiserror` (erreurs), `dirs` (chemins `~/Library/LaunchAgents`), `chrono` (horodatage UTC de l'en-tête de rapport, feature `clock` uniquement). Pas de dépendance externe pour les indicateurs de progression (`progress::DotProgress`, texte simple — `indicatif` a été retiré, son rendu ne fonctionnant pas correctement sur certains terminaux Windows).
 
 ## Commandes
 ```bash

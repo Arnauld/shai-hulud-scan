@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.5.61", features = ["derive"] }
 console = "0.16.4"
 csv = "1.4.0"

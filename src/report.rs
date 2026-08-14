@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use chrono::Utc;
 use console::style;
 use serde::Serialize;
 
@@ -12,6 +13,28 @@ use crate::hunt::{InstallScript, ThreatSignal};
 use crate::ioc::CompromiseStatus;
 
 const REPORT_NOT_COMPROMISED: bool = false;
+
+/// En-tête du rapport : date/heure du scan et identification de l'outil (nom +
+/// version), pour tracer quand et avec quelle version un rapport a été produit —
+/// utile pour des rapports archivés/comparés dans le temps. Toujours affiché, quel
+/// que soit `--report-level` (métadonnée du rapport, pas du contenu filtrable).
+/// Horodatage en UTC plutôt qu'heure locale : la détection du fuseau local n'est pas
+/// fiable sur les binaires musl statiques minimaux (SPEC-T03) sans base de données de
+/// fuseaux horaires complète.
+#[derive(Debug, Serialize)]
+pub struct ReportHeader {
+    pub scanned_at: String,
+    pub tool: String,
+}
+
+impl Default for ReportHeader {
+    fn default() -> Self {
+        Self {
+            scanned_at: format!("{}", Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
+            tool: format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        }
+    }
+}
 
 /// Niveau de détail du rapport (`--report-level`), indépendant du niveau de log
 /// `--verbose` (SPEC-T04) : réutilise la même échelle `ERROR < WARN < INFO < DEBUG`
@@ -33,6 +56,7 @@ pub enum ReportLevel {
 /// Rapport d'audit sérialisable, indépendant du format de sortie final.
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
+    pub header: ReportHeader,
     pub project_count: usize,
     pub findings: Vec<FindingReport>,
     pub threats: Vec<ThreatSignal>,
@@ -77,6 +101,7 @@ fn severity_rank(status: &CompromiseStatus) -> u8 {
 impl Report {
     pub fn from_findings(findings: &[Finding]) -> Self {
         Self {
+            header: ReportHeader::default(),
             project_count: 0,
             findings: findings.iter().map(FindingReport::from).collect(),
             threats: Vec::new(),
@@ -127,6 +152,15 @@ impl Report {
     /// "texte brut" du rapport-fichier (SPEC-T02), lui aussi filtré par `level`.
     pub fn render_text(&self, level: ReportLevel) -> String {
         let mut out = String::new();
+
+        out.push_str(&format!(
+            "{}\n",
+            style(format!(
+                "Scan effectué le {} par {}",
+                self.header.scanned_at, self.header.tool
+            ))
+            .bold()
+        ));
 
         if level >= ReportLevel::Warn {
             out.push_str(&format!(
@@ -318,6 +352,23 @@ mod tests {
         assert!(text.contains("evil-pkg@1.0.0"));
         assert!(text.contains("SuspiciousFile"));
         assert!(text.contains("setup.mjs"));
+    }
+
+    #[test]
+    fn renders_a_header_with_scan_date_and_tool_version_at_every_level() {
+        let report = Report::from_findings(&[]);
+
+        for level in [
+            ReportLevel::Error,
+            ReportLevel::Warn,
+            ReportLevel::Info,
+            ReportLevel::Debug,
+        ] {
+            let text = report.render_text(level);
+            assert!(text.contains("Scan effectué le"));
+            assert!(text.contains(env!("CARGO_PKG_VERSION")));
+            assert!(text.contains("shai-hulud-guard"));
+        }
     }
 
     #[test]
