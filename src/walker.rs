@@ -4,8 +4,9 @@ use std::io::ErrorKind;
 use std::path::Path;
 
 use ignore::{DirEntry, WalkBuilder};
-use indicatif::ProgressBar;
 use tracing::{debug, warn};
+
+use crate::progress::DotProgress;
 
 /// Chemin associé à une erreur de parcours, si `ignore::Error` en porte un
 /// (`WithPath`/`WithLineNumber`/`WithDepth` s'enveloppent les uns les autres selon le
@@ -56,7 +57,7 @@ fn log_walk_error(err: ignore::Error) {
 /// sous-dépôt intentionnellement ignoré, ex. un clone imbriqué) et en élaguant les
 /// dossiers cachés, sans dépendre de commandes système externes. `progress` est
 /// incrémentée d'une unité par entrée visitée (SPEC-T02) — passer
-/// `ProgressBar::hidden()` pour un parcours silencieux (ex. en test). Chaque entrée
+/// `DotProgress::new(false)` pour un parcours silencieux (ex. en test). Chaque entrée
 /// visitée est journalisée au niveau `DEBUG` (visible uniquement via `--verbose`,
 /// SPEC-T04). Toute entrée qui ne peut pas être lue (permissions insuffisantes,
 /// chemin trop long — un cas classique sous Windows au-delà de `MAX_PATH` — boucle
@@ -68,7 +69,7 @@ fn log_walk_error(err: ignore::Error) {
 /// directive `ignore=debug` avec `--verbose`).
 pub fn walk<'a>(
     root: &Path,
-    progress: &'a ProgressBar,
+    progress: &'a DotProgress,
     no_ignore: bool,
 ) -> impl Iterator<Item = DirEntry> + 'a {
     WalkBuilder::new(root)
@@ -84,7 +85,7 @@ pub fn walk<'a>(
             }
         })
         .inspect(move |entry| {
-            progress.inc(1);
+            progress.inc();
             debug!(path = %entry.path().display(), "fichier analysé");
         })
 }
@@ -98,7 +99,7 @@ pub fn walk<'a>(
 /// volontairement ignoré.
 pub fn walk_including_hidden<'a>(
     root: &Path,
-    progress: &'a ProgressBar,
+    progress: &'a DotProgress,
     no_ignore: bool,
 ) -> impl Iterator<Item = DirEntry> + 'a {
     WalkBuilder::new(root)
@@ -116,7 +117,7 @@ pub fn walk_including_hidden<'a>(
             }
         })
         .inspect(move |entry| {
-            progress.inc(1);
+            progress.inc();
             debug!(path = %entry.path().display(), "fichier analysé (dotfiles inclus)");
         })
 }
@@ -130,7 +131,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
 
-        let progress = ProgressBar::hidden();
+        let progress = DotProgress::new(false);
         let found = walk(dir.path(), &progress, false)
             .filter(|entry| entry.file_name() == "package.json")
             .count();

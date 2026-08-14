@@ -6,6 +6,7 @@ pub mod hunt;
 pub mod ioc;
 pub mod iocs;
 pub mod lockfile;
+pub mod progress;
 pub mod registry;
 pub mod report;
 pub mod scan;
@@ -22,6 +23,7 @@ use tracing::{debug, info};
 use cli::Cli;
 use discovery::discover;
 use ioc::IocDatabase;
+use progress::DotProgress;
 use report::Report;
 
 /// Orchestre une passe d'audit complète sur `cli.path` et retourne le rapport final :
@@ -31,9 +33,10 @@ use report::Report;
 /// niveau 2, dans une copie isolée sous `working/` — jamais dans le projet original —
 /// entièrement ignorée si npm est indisponible, avec des processus concurrents
 /// bornés par un sémaphore dimensionné par `cli.workers`, SPEC-T01) et recherche
-/// active de signaux malveillants sur le disque (SPEC-F06/F07). Le parcours de
-/// fichiers et la simulation npm affichent une barre de progression `indicatif`,
-/// désactivable via `--no-color` (SPEC-T02).
+/// active de signaux malveillants sur le disque (SPEC-F06/F07). La simulation npm
+/// affiche une barre de progression `indicatif` ; le parcours de fichiers affiche un
+/// flux de points texte (`progress::DotProgress`, plus robuste que `indicatif` sur
+/// certains terminaux Windows) — tous deux désactivables via `--no-color` (SPEC-T02).
 pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     let npm_command = simulate::resolve_npm_command(cli.npm_path.as_deref());
     let npm_available = simulate::check_npm_available(&npm_command).await;
@@ -47,17 +50,20 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     let iocs_config = iocs::load(cli.iocs_file.as_deref())?;
 
     info!(path = %cli.path.display(), "lancement de l'analyse");
-    let walk_progress = spinner(cli.no_color)?;
+    let walk_progress = DotProgress::new(!cli.no_color);
     let projects = discover(&cli.path, &walk_progress, cli.no_ignore);
+    walk_progress.finish();
     // Le compte de fichiers ("nombre de fichier à analyser", SPEC-T04) n'est connu
-    // qu'une fois le parcours terminé : il est affiché progressivement dans le
-    // spinner puis figé ici sur la même ligne — pas besoin d'un log INFO séparé,
-    // c'est déjà une information console visible.
-    walk_progress.finish_with_message(format!(
-        "{} fichier(s) analysé(s), {} projet(s) découvert(s)",
-        walk_progress.position(),
-        projects.len()
-    ));
+    // qu'une fois le parcours terminé : il est affiché à la suite des points de
+    // progression, pas besoin d'un log INFO séparé, c'est déjà une information
+    // console visible (silencieuse elle aussi via --no-color, comme le reste).
+    if !cli.no_color {
+        eprintln!(
+            "{} fichier(s) analysé(s), {} projet(s) découvert(s)",
+            walk_progress.position(),
+            projects.len()
+        );
+    }
 
     info!(path = %cli.path.display(), "Analyse - phase audit projects");
     let mut findings: Vec<_> = projects
@@ -142,20 +148,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         .with_install_scripts(install_scripts)
         .with_install_command_mentions(install_command_mentions)
         .with_project_count(project_count))
-}
-
-/// Barre indéterminée pour le parcours de fichiers (SPEC-T02).
-fn spinner(no_color: bool) -> anyhow::Result<ProgressBar> {
-    if no_color {
-        return Ok(ProgressBar::hidden());
-    }
-    let progress = ProgressBar::new_spinner();
-    progress.set_style(ProgressStyle::with_template(
-        "{spinner:.cyan} {msg} ({pos} entrées)",
-    )?);
-    progress.set_message("Parcours des fichiers…");
-    progress.enable_steady_tick(Duration::from_millis(120));
-    Ok(progress)
 }
 
 /// Barre déterminée (longueur connue à l'avance) pour la simulation npm (SPEC-T02).

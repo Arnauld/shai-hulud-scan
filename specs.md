@@ -263,7 +263,15 @@ SPEC-F06/F07 :
 *   **Limiteur de Concurrence (Sémaphore) :** Le lancement de processus lourds (`npm install`) doit être encadré par un sémaphore (`tokio::sync::Semaphore`) configurable (par exemple, 4 travailleurs max par défaut) pour éviter de saturer le disque ou les E/S du système, particulièrement sous WSL.
 
 ### SPEC-T02 - Indicateurs de progression et formats de sortie (CLI UX)
-*   **Rapports Visuels :** Utiliser la crate **`indicatif`** pour afficher une barre de progression interactive et dynamique lors de la simulation npm et du parcours de fichiers.
+*   **Rapports Visuels :** Utiliser la crate **`indicatif`** pour afficher une barre de progression
+    interactive et dynamique lors de la simulation npm.
+*   **Parcours de fichiers — indicateur texte dédié :** Le parcours (SPEC-F02) n'utilise **pas**
+    `indicatif` : sur certains terminaux Windows, sa gestion du curseur/redessin de ligne ne
+    fonctionne pas correctement et produit une sortie illisible, entrecoupée des lignes de log.
+    `progress::DotProgress` affiche à la place un simple point (`.`) par entrée visitée, ajouté sur
+    la même ligne (stderr), avec un récapitulatif `50/<total>` tous les 50 points puis un retour à la
+    ligne — ne dépend d'aucune fonctionnalité terminal au-delà d'un `print!`/flush basique, garanti
+    de fonctionner partout. Désactivé par `--no-color`, comme la barre `indicatif` de la simulation.
 *   **Formats de Restitution :**
     *   **Console :** Sortie interactive colorée avec des codes ANSI (pouvant être désactivée via `--no-color`).
     *   **Fichier Rapport :** Permettre l'écriture d'un rapport d'audit propre en texte brut via `--report-file <path>`, épuré de tout code ANSI.

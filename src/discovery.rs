@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use indicatif::ProgressBar;
 use tracing::debug;
+
+use crate::progress::DotProgress;
 
 /// Un projet Node.js détecté par la présence d'un `package.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +19,7 @@ pub struct Project {
 /// situés sous un `node_modules` sont exclus : ce sont des paquets déjà installés,
 /// pas des racines de projet — ils sont vérifiés directement par leur nom/version
 /// déclarés (`audit::audit_installed_packages`), sans lockfile ni simulation.
-pub fn discover(root: &Path, progress: &ProgressBar, no_ignore: bool) -> Vec<Project> {
+pub fn discover(root: &Path, progress: &DotProgress, no_ignore: bool) -> Vec<Project> {
     let projects: Vec<Project> = crate::walker::walk(root, progress, no_ignore)
         .filter(|entry| entry.file_name() == "package.json")
         .filter(|entry| {
@@ -64,7 +65,7 @@ mod tests {
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
         std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
 
-        let projects = discover(dir.path(), &ProgressBar::hidden(), false);
+        let projects = discover(dir.path(), &DotProgress::new(false), false);
         assert_eq!(projects.len(), 1);
         assert!(projects[0].has_npm_lock);
         assert!(!projects[0].has_yarn_lock);
@@ -79,7 +80,7 @@ mod tests {
         std::fs::create_dir_all(&installed_pkg_dir).unwrap();
         std::fs::write(installed_pkg_dir.join("package.json"), "{}").unwrap();
 
-        let projects = discover(dir.path(), &ProgressBar::hidden(), false);
+        let projects = discover(dir.path(), &DotProgress::new(false), false);
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].root, dir.path());
     }

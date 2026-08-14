@@ -9,11 +9,10 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use indicatif::ProgressBar;
-
 use crate::comments::{comment_spans, is_within_comment, language_for_path};
 use crate::hunt::{ThreatCategory, ThreatSignal};
 use crate::iocs::IocsConfig;
+use crate::progress::DotProgress;
 
 /// Vrai si `content` contient une instruction d'installation npm ou yarn directe,
 /// selon les regex de `config` (SPEC-F05).
@@ -121,7 +120,7 @@ pub fn scan_workspace(
     no_ignore: bool,
     config: &IocsConfig,
 ) -> (Vec<ThreatSignal>, Vec<PathBuf>) {
-    let progress = ProgressBar::hidden();
+    let progress = DotProgress::new(false);
     let mut threat_signals = Vec::new();
     let mut install_mentions = Vec::new();
 

@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use indicatif::ProgressBar;
 use serde::Deserialize;
 use tracing::debug;
 
@@ -11,6 +10,7 @@ use crate::discovery::Project;
 use crate::hunt::{ThreatCategory, ThreatSignal};
 use crate::ioc::{CompromiseStatus, IocDatabase};
 use crate::lockfile::{parse_npm_lock, parse_yarn_lock, LockedDependency};
+use crate::progress::DotProgress;
 
 /// Une dépendance résolue dans un lockfile, avec son verdict et le projet qui la
 /// référence (SPEC-F04, niveau 1) — nécessaire pour regrouper le récapitulatif des
@@ -91,7 +91,7 @@ pub fn audit_installed_packages(db: &IocDatabase, project: &Project) -> Vec<Find
         // journalise sinon un WARN d'erreur d'E/S trompeur pour ce cas courant.
         return Vec::new();
     }
-    let progress = ProgressBar::hidden();
+    let progress = DotProgress::new(false);
     crate::walker::walk(&node_modules, &progress, true)
         .filter(|entry| entry.file_name() == "package.json")
         .filter_map(|entry| {
