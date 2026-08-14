@@ -57,7 +57,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     .await?;
 
     info!(path = %cli.path.display(), "lancement de l'analyse");
-    let walk_progress = DotProgress::new(!cli.no_color);
+    let walk_progress = DotProgress::new(true, 10, 100);
     let workspace =
         workspace::walk_workspace(&cli.path, &walk_progress, cli.no_ignore, &iocs_config);
     walk_progress.finish();
@@ -75,7 +75,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     let projects = workspace.projects;
     let install_command_mentions = workspace.install_command_mentions;
 
-    info!(path = %cli.path.display(), "Analyse - phase audit projects");
+    info!("Analyse - phase audit projects");
     let mut findings: Vec<_> = projects
         .iter()
         .flat_map(|project| {
@@ -85,7 +85,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         })
         .collect();
 
-    info!(path = %cli.path.display(), "Analyse - phase hunting install scripts");
+    info!("Analyse - phase hunting install scripts");
     let mut threats = hunt::hunt(&cli.path, &projects, &iocs_config, &workspace.git_dirs);
     let install_scripts: Vec<_> = projects
         .iter()
@@ -99,12 +99,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
     );
     threats.extend(projects.iter().flat_map(audit::audit_lockfile_drift));
 
-    info!(path = %cli.path.display(), "Analyse - npm install simulation");
+    info!("Analyse - npm install simulation");
     let project_count = projects.len();
     let db = Arc::new(db);
     let semaphore = Arc::new(Semaphore::new(cli.workers.max(1)));
     let npm_timeout = Duration::from_secs(cli.npm_timeout);
-    let simulation_progress = DotProgress::new(!cli.no_color);
+    let simulation_progress = DotProgress::new(true, 1, 100);
 
     if npm_available {
         let mut simulations = tokio::task::JoinSet::new();

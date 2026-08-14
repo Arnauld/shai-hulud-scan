@@ -9,27 +9,36 @@
 use std::cell::Cell;
 use std::io::Write;
 
-const BATCH_SIZE: u64 = 80;
-
 /// Compteur de progression texte. `enabled: false` (ex. `--no-color`, ou usage
 /// interne silencieux comme l'audit `node_modules`) rend `inc`/`finish` no-op côté
 /// affichage, mais `position()` continue de refléter le nombre réel d'appels à `inc`.
 pub struct DotProgress {
     count: Cell<u64>,
     enabled: bool,
+    batch_group: u64,
+    batch_group_threshold: u64,
 }
 
 impl DotProgress {
-    pub fn new(enabled: bool) -> Self {
+    pub fn new(enabled: bool, batch_group: u64, batch_group_limit: u64) -> Self {
         Self {
             count: Cell::new(0),
             enabled,
+            batch_group,
+            batch_group_threshold: batch_group * batch_group_limit,
         }
     }
 
-    /// Incrémente le compteur d'une unité et, si activé, ajoute un `.` sur la ligne
-    /// courante (stderr, jamais stdout — cohérent avec les logs `tracing`, SPEC-T04).
-    /// Tous les `BATCH_SIZE` points, imprime un récapitulatif `BATCH_SIZE/total` puis
+    pub fn new_disabled() -> Self {
+        DotProgress::new(false, 10, 100)
+    }
+
+    /// Incrémente le compteur d'une unité et, si activé,
+    /// ajoute tous les `BATCH_GROUP` un `.` sur la ligne
+    /// courante (stderr, jamais stdout — cohérent avec
+    /// les logs `tracing`, SPEC-T04).
+    /// Tous les `BATCH_GROUP*`BATCH_GROUP_LIMIT points,
+    /// imprime un récapitulatif `total` puis
     /// passe à la ligne.
     pub fn inc(&self) {
         let next = self.count.get() + 1;
@@ -37,10 +46,12 @@ impl DotProgress {
         if !self.enabled {
             return;
         }
-        eprint!(".");
-        let _ = std::io::stderr().flush();
-        if next.is_multiple_of(BATCH_SIZE) {
-            eprintln!(" {next}");
+        if next.is_multiple_of(self.batch_group) {
+            eprint!(".");
+            let _ = std::io::stderr().flush();
+            if next.is_multiple_of(self.batch_group_threshold) {
+                eprintln!(" {next}");
+            }
         }
     }
 
@@ -56,10 +67,7 @@ impl DotProgress {
             return;
         }
         let total = self.count.get();
-        let remainder = total % BATCH_SIZE;
-        if remainder != 0 {
-            eprintln!(" {remainder}/{total}");
-        }
+        eprintln!(" {total}");
     }
 }
 
@@ -67,9 +75,12 @@ impl DotProgress {
 mod tests {
     use super::*;
 
+    const BATCH_GROUP: u64 = 10;
+    const BATCH_GROUP_LIMIT: u64 = 100;
+
     #[test]
     fn position_tracks_the_number_of_increments_even_when_disabled() {
-        let progress = DotProgress::new(false);
+        let progress = DotProgress::new(false, BATCH_GROUP, BATCH_GROUP_LIMIT);
         for _ in 0..73 {
             progress.inc();
         }
@@ -78,7 +89,7 @@ mod tests {
 
     #[test]
     fn position_tracks_increments_when_enabled_too() {
-        let progress = DotProgress::new(true);
+        let progress = DotProgress::new(true, BATCH_GROUP, BATCH_GROUP_LIMIT);
         for _ in 0..3 {
             progress.inc();
         }
@@ -88,7 +99,7 @@ mod tests {
     #[test]
     fn finish_is_a_no_op_when_disabled() {
         // Ne doit pas paniquer, ni écrire quoi que ce soit d'observable.
-        let progress = DotProgress::new(false);
+        let progress = DotProgress::new(false, BATCH_GROUP, BATCH_GROUP_LIMIT);
         progress.inc();
         progress.finish();
     }

@@ -192,7 +192,7 @@ pub fn scan_workspace(
     no_ignore: bool,
     config: &IocsConfig,
 ) -> (Vec<ThreatSignal>, Vec<PathBuf>) {
-    let progress = DotProgress::new(false);
+    let progress = DotProgress::new_disabled();
     let mut threat_signals = Vec::new();
     let mut install_mentions = Vec::new();
 

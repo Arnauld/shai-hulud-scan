@@ -91,7 +91,7 @@ pub fn audit_installed_packages(db: &IocDatabase, project: &Project) -> Vec<Find
         // journalise sinon un WARN d'erreur d'E/S trompeur pour ce cas courant.
         return Vec::new();
     }
-    let progress = DotProgress::new(false);
+    let progress = DotProgress::new_disabled();
     crate::walker::walk(&node_modules, &progress, true)
         .filter(|entry| entry.file_name() == "package.json")
         .filter_map(|entry| {

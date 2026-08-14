@@ -76,7 +76,7 @@ mod tests {
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
         std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
 
-        let projects = discover(dir.path(), &DotProgress::new(false), false);
+        let projects = discover(dir.path(), &DotProgress::new_disabled(), false);
         assert_eq!(projects.len(), 1);
         assert!(projects[0].has_npm_lock);
         assert!(!projects[0].has_yarn_lock);
@@ -91,7 +91,7 @@ mod tests {
         std::fs::create_dir_all(&installed_pkg_dir).unwrap();
         std::fs::write(installed_pkg_dir.join("package.json"), "{}").unwrap();
 
-        let projects = discover(dir.path(), &DotProgress::new(false), false);
+        let projects = discover(dir.path(), &DotProgress::new_disabled(), false);
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].root, dir.path());
     }

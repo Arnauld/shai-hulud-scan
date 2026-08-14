@@ -143,7 +143,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
 
-        let progress = DotProgress::new(false);
+        let progress = DotProgress::new_disabled();
         let found = walk(dir.path(), &progress, false)
             .filter(|entry| entry.file_name() == "package.json")
             .count();

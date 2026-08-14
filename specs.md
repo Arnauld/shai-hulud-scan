@@ -280,15 +280,17 @@ SPEC-F06/F07 :
 
 ### SPEC-T02 - Indicateurs de progression et formats de sortie (CLI UX)
 *   **Indicateur texte dédié (`progress::DotProgress`) :** Le parcours de fichiers (SPEC-F02) et la
-    simulation `npm install` (SPEC-F04) affichent chacun un simple point (`.`) par entrée/simulation
-    traitée, ajouté sur la même ligne (stderr), avec un récapitulatif de la position tous les
-    `BATCH_SIZE` points puis un retour à la ligne (et un dernier récapitulatif `reste/total` en fin de
-    flux si le compte ne tombe pas juste sur un multiple de `BATCH_SIZE`). N'utilise **pas** la crate
-    `indicatif` : sur certains terminaux Windows, sa gestion du curseur/redessin de ligne ne
-    fonctionne pas correctement et produit une sortie illisible, entrecoupée des lignes de log —
-    `DotProgress` ne dépend d'aucune fonctionnalité terminal au-delà d'un `print!`/flush basique,
-    garanti de fonctionner partout, y compris en sortie redirigée. Désactivé par `--no-color`, pour
-    les deux usages.
+    simulation `npm install` (SPEC-F04) affichent chacun un indicateur à deux niveaux : un point
+    (`.`) ajouté sur la même ligne (stderr) tous les `batch_group` éléments traités (pas un par
+    élément — trop bruyant sur de très grandes arborescences), puis un récapitulatif de la position
+    tous les `batch_group * batch_group_limit` éléments, avec retour à la ligne (et un dernier
+    récapitulatif en fin de flux). N'utilise **pas** la crate `indicatif` : sur certains terminaux
+    Windows, sa gestion du curseur/redessin de ligne ne fonctionne pas correctement et produit une
+    sortie illisible, entrecoupée des lignes de log — `DotProgress` ne dépend d'aucune fonctionnalité
+    terminal au-delà d'un `print!`/flush basique, garanti de fonctionner partout, y compris en sortie
+    redirigée. **Non désactivé par `--no-color`** : ce flag ne contrôle que les codes ANSI de
+    couleur (console, rapport) — `DotProgress` n'en a jamais émis, les deux réglages sont
+    indépendants.
 *   **Formats de Restitution :**
     *   **Console :** Sortie interactive colorée avec des codes ANSI (pouvant être désactivée via `--no-color`).
     *   **Fichier Rapport :** Permettre l'écriture d'un rapport d'audit propre en texte brut via `--report-file <path>`, épuré de tout code ANSI.
