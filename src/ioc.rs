@@ -9,9 +9,6 @@ use anyhow::Context;
 use serde::Serialize;
 use tracing::{error, info, warn};
 
-/// URL officielle de la base d'IOC Datadog (paquets npm malveillants connus).
-pub const OFFICIAL_IOC_URL: &str = "https://raw.githubusercontent.com/DataDog/indicators-of-compromise/refs/heads/keyv-campaign/keyv-campaign/malicious-packages.csv";
-
 /// Nom du fichier recherché dans le répertoire d'exécution en fallback local.
 pub const LOCAL_FALLBACK_FILENAME: &str = "malicious-packages.csv";
 
@@ -80,17 +77,18 @@ impl IocDatabase {
         }
     }
 
-    /// Charge la base IOC (SPEC-F01) : tente d'abord le téléchargement depuis l'URL
-    /// officielle, puis se rabat sur `database_path` s'il est fourni, ou sur un
-    /// fichier `malicious-packages.csv` présent dans le répertoire d'exécution. Si
-    /// `offline` est vrai (`--offline`), le téléchargement n'est jamais tenté et la
-    /// base locale est utilisée directement.
-    pub async fn load(database_path: Option<&Path>, offline: bool) -> anyhow::Result<Self> {
+    /// Charge la base IOC (SPEC-F01) : tente d'abord le téléchargement depuis
+    /// `official_url` (`iocs.toml`, paramétrable via `--iocs-file`), puis se rabat sur
+    /// `database_path` s'il est fourni, ou sur un fichier `malicious-packages.csv`
+    /// présent dans le répertoire d'exécution. Si `offline` est vrai (`--offline`), le
+    /// téléchargement n'est jamais tenté et la base locale est utilisée directement.
+    pub async fn load(
+        database_path: Option<&Path>,
+        offline: bool,
+        official_url: &str,
+    ) -> anyhow::Result<Self> {
         let cwd = std::env::current_dir()?;
-        Self::load_with(database_path, &cwd, offline, || {
-            download_csv(OFFICIAL_IOC_URL)
-        })
-        .await
+        Self::load_with(database_path, &cwd, offline, || download_csv(official_url)).await
     }
 
     async fn load_with<F, Fut>(

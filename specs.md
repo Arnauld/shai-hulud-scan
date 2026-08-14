@@ -16,8 +16,11 @@ Le code privilégiera le typage fort et devra être testable et documenté.
 ### SPEC-F01 - Gestion de la base de signatures (IOC)
 L'outil doit charger et exploiter la base de signatures d'attaques sous format CSV (provenant par exemple de Datadog Indicators of Compromise).
 
-*   **Récupération Réseau :** Par défaut, tenter de télécharger la version la plus récente depuis l'URL officielle :
-    `https://raw.githubusercontent.com/DataDog/indicators-of-compromise/refs/heads/keyv-campaign/keyv-campaign/malicious-packages.csv`
+*   **Récupération Réseau :** Par défaut, tenter de télécharger la version la plus récente depuis l'URL
+    officielle configurée par `official_ioc_url` dans `iocs.toml` (SPEC-T06, valeur par défaut
+    embarquée : `https://raw.githubusercontent.com/DataDog/indicators-of-compromise/refs/heads/keyv-campaign/keyv-campaign/malicious-packages.csv`)
+    — paramétrable sans recompilation via `--iocs-file`, distincte de `--database`/`--offline` qui
+    concernent le fallback local, pas la source réseau.
 *   **Résolution Locale & Fallback :** En cas d'absence de connexion réseau, utiliser un fichier local passé en argument (`--database <path>`) ou rechercher un fichier `malicious-packages.csv` présent dans le repertoire d'execution.
 *   **Mode Forcé Hors-Ligne (`--offline`) :** Permettre de forcer l'utilisation de la base locale (`--database <path>` ou fichier trouvé dans le répertoire d'exécution) sans jamais tenter le téléchargement réseau, y compris lorsque celui-ci serait disponible. Utile pour les environnements CI/sandbox ou pour garantir l'usage d'une base de signatures figée/spécifique lors des tests.
 *   **Format de Stockage en Mémoire :** Charger les signatures dans une structure de type `HashMap<String, Vec<String>>` où la clé est le nom du paquet NPM et la valeur est un tableau des versions compromises, optimisant ainsi les temps de recherche en $O(1)$.
@@ -354,14 +357,17 @@ qui les consomme.
     conserve sa valeur par défaut (un fichier qui ne redéfinit que `known_c2_markers`, par exemple,
     garde toutes les autres listes par défaut). Une clé présente mais explicitement vide (`[]`) vide
     bien la liste par défaut correspondante — la fusion ne s'applique qu'à l'absence de la clé, pas à
-    son contenu. Distinct de `--database`/`--offline` (SPEC-F01), qui concernent la base CSV des
-    paquets npm compromis, pas les signatures de Threat Hunting.
-*   **Valeurs paramétrables (toutes des listes, sauf les deux regex) :** `suspicious_filenames`,
+    son contenu. Distinct de `--database`/`--offline` (SPEC-F01), qui concernent le fallback CSV
+    local des paquets npm compromis, pas les signatures de Threat Hunting — `official_ioc_url` fait
+    toutefois exception : c'est l'URL réseau de cette même base CSV (SPEC-F01), mais elle vit dans ce
+    fichier plutôt que dans le code pour la même raison que tout le reste ici (évolutivité sans
+    recompilation).
+*   **Valeurs paramétrables (toutes des listes, sauf les deux regex et l'URL) :** `suspicious_filenames`,
     `known_malicious_file_hashes` (liste de `{ hash, label }`), `suspicious_hook_markers`,
     `suspicious_launch_agent_markers`, `exfil_artifact_filenames`, `suspicious_workflow_filenames`,
     `suspicious_cache_dirnames`, `default_git_template_dirnames`, `npmrc_secret_keys`,
     `known_c2_markers`, `excluded_extensions`, `allowed_registry_hosts`, `npm_install_regex`,
-    `yarn_install_regex`. Les marqueurs qui n'admettaient historiquement qu'une seule valeur en dur
+    `yarn_install_regex`, `official_ioc_url` (SPEC-F01). Les marqueurs qui n'admettaient historiquement qu'une seule valeur en dur
     (hook VS Code/node_modules, LaunchAgent macOS, dossier de cache) sont désormais des listes,
     pour permettre d'en déclarer plusieurs.
 *   **Alias npm/yarn :** paramétrés directement sous forme de regex complète (`npm_install_regex`/

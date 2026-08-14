@@ -43,6 +43,10 @@ pub struct IocsConfig {
     pub allowed_registry_hosts: Vec<String>,
     pub npm_install_regex: Regex,
     pub yarn_install_regex: Regex,
+    /// URL officielle de téléchargement de la base IOC des paquets npm compromis
+    /// (SPEC-F01, distincte des signatures de Threat Hunting ci-dessus — c'est le
+    /// seul champ de cette config consommé par `ioc.rs`, pas par `hunt`/`scan`).
+    pub official_ioc_url: String,
 }
 
 /// Représentation TOML brute, chaque champ optionnel pour distinguer "absent du
@@ -65,6 +69,7 @@ struct RawIocsConfig {
     allowed_registry_hosts: Option<Vec<String>>,
     npm_install_regex: Option<String>,
     yarn_install_regex: Option<String>,
+    official_ioc_url: Option<String>,
 }
 
 impl RawIocsConfig {
@@ -103,6 +108,7 @@ impl RawIocsConfig {
                 .or(self.allowed_registry_hosts),
             npm_install_regex: override_.npm_install_regex.or(self.npm_install_regex),
             yarn_install_regex: override_.yarn_install_regex.or(self.yarn_install_regex),
+            official_ioc_url: override_.official_ioc_url.or(self.official_ioc_url),
         }
     }
 
@@ -130,6 +136,7 @@ impl RawIocsConfig {
             npm_install_regex: Regex::new(&npm_install_regex).with_context(|| {
                 format!("regex npm_install_regex invalide dans la configuration IOC : {npm_install_regex}")
             })?,
+            official_ioc_url: self.official_ioc_url.unwrap_or_default(),
         })
     }
 }
@@ -170,6 +177,21 @@ mod tests {
             .contains(&"npm-cache.com".to_string()));
         assert!(config.npm_install_regex.is_match("npm install"));
         assert!(config.yarn_install_regex.is_match("yarn add lodash"));
+        assert!(config.official_ioc_url.starts_with("https://"));
+    }
+
+    #[test]
+    fn overrides_the_official_ioc_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom.toml");
+        std::fs::write(
+            &path,
+            r#"official_ioc_url = "https://example.com/custom.csv""#,
+        )
+        .unwrap();
+
+        let config = load(Some(&path)).unwrap();
+        assert_eq!(config.official_ioc_url, "https://example.com/custom.csv");
     }
 
     #[test]

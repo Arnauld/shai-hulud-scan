@@ -103,6 +103,13 @@ allowed_registry_hosts = ["registry.npmjs.org", "registry.yarnpkg.com"]
 npm_install_regex = "npm\\s+(install|add|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|ci|clean-install|ic|install-clean|isntall-clean|update|u|up|upgrade|udpate)\\b"
 yarn_install_regex = "yarn\\s+(install|add|ci|upgrade|run)"
 
+# URL officielle de téléchargement de la base IOC des paquets npm compromis (SPEC-F01)
+# — distincte des signatures de Threat Hunting ci-dessus, c'est le seul champ de ce
+# fichier consommé par le chargement de la base CSV (`ioc.rs`) plutôt que par
+# `hunt`/`scan`/`registry`. `--database`/`--offline` restent la façon de s'en passer
+# entièrement (base locale uniquement, jamais de tentative réseau).
+official_ioc_url = "https://raw.githubusercontent.com/DataDog/indicators-of-compromise/refs/heads/keyv-campaign/keyv-campaign/malicious-packages.csv"
+
 # Empreintes SHA-256 connues des charges du ver (SPEC-F08 point 1, source : Elastic
 # Security Labs) : une correspondance de hash est une confirmation directe, plus
 # fiable qu'une simple correspondance de nom (le fichier est renommé selon le vecteur

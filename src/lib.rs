@@ -46,8 +46,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         tokio::fs::create_dir_all(&working_dir).await?;
     }
 
-    let db = IocDatabase::load(cli.database.as_deref(), cli.offline).await?;
     let iocs_config = iocs::load(cli.iocs_file.as_deref())?;
+    let db = IocDatabase::load(
+        cli.database.as_deref(),
+        cli.offline,
+        &iocs_config.official_ioc_url,
+    )
+    .await?;
 
     info!(path = %cli.path.display(), "lancement de l'analyse");
     let walk_progress = DotProgress::new(!cli.no_color);
