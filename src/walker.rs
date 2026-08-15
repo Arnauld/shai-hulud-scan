@@ -1,10 +1,18 @@
-//! Parcours de fichiers ultra-rapide via la crate `ignore` (SPEC-F02).
+//! Parcours de fichiers ultra-rapide via la crate `ignore` (SPEC-F02) — moteur
+//! **parallèle** (`WalkParallel`, celui qui fait la réputation de vitesse de `rg`),
+//! pas la variante mono-thread : `WalkParallel::run` pilote elle-même un pool de
+//! threads mais ne s'utilise pas comme un `Iterator` (API à base de callback par
+//! thread). Un canal (`mpsc`) fait le pont vers l'API `Iterator` synchrone attendue
+//! par tous les appelants de ce module (`discovery`, `scan`, `workspace`, `audit`) :
+//! le parcours tourne sur un thread dédié pendant que le thread appelant consomme les
+//! entrées au fil de l'eau via le canal, sans attendre la fin du parcours complet.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use ignore::{DirEntry, WalkBuilder};
+use ignore::{DirEntry, WalkBuilder, WalkParallel, WalkState};
 use tracing::{debug, warn};
 
 use crate::progress::DotProgress;
@@ -53,38 +61,68 @@ fn log_walk_error(err: ignore::Error) {
     );
 }
 
+/// Lance un `WalkParallel` déjà construit sur un thread dédié et fait remonter chaque
+/// entrée valide via un canal `mpsc` — le pont entre l'API callback-par-thread de
+/// `WalkParallel` et l'API `Iterator` synchrone utilisée par tous les appelants de ce
+/// module. Les erreurs de parcours sont journalisées au fil de l'eau
+/// (`log_walk_error`), depuis le thread worker qui les rencontre — `tracing` est
+/// thread-safe, aucune synchronisation supplémentaire n'est nécessaire ici.
+fn spawn_parallel_walk(walker: WalkParallel) -> mpsc::Receiver<DirEntry> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        walker.run(|| {
+            let tx = tx.clone();
+            Box::new(move |entry| match entry {
+                Ok(entry) => {
+                    if tx.send(entry).is_err() {
+                        // Le récepteur a été abandonné (l'appelant a arrêté de
+                        // consommer l'itérateur avant la fin) : inutile de
+                        // continuer à parcourir le reste de l'arborescence.
+                        return WalkState::Quit;
+                    }
+                    WalkState::Continue
+                }
+                Err(err) => {
+                    log_walk_error(err);
+                    WalkState::Continue
+                }
+            })
+        });
+    });
+    rx
+}
+
 /// Parcourt récursivement `root` en respectant les règles `.gitignore` (sauf
 /// `no_ignore: true`, `--no-ignore`, SPEC-F02 — nécessaire pour ne pas manquer un
 /// sous-dépôt intentionnellement ignoré, ex. un clone imbriqué) et en élaguant les
-/// dossiers cachés, sans dépendre de commandes système externes. `progress` est
-/// incrémentée d'une unité par entrée visitée (SPEC-T02) — passer
-/// `DotProgress::new(false)` pour un parcours silencieux (ex. en test). Chaque entrée
-/// visitée est journalisée au niveau `DEBUG` (visible uniquement via `--verbose`,
-/// SPEC-T04). Toute entrée qui ne peut pas être lue (permissions insuffisantes,
-/// chemin trop long — un cas classique sous Windows au-delà de `MAX_PATH` — boucle
-/// de symlinks...) est journalisée en `WARN`, toujours visible par défaut, plutôt
-/// que d'être silencieusement absente du parcours sans explication. Les répertoires
-/// volontairement élagués par les règles `.gitignore`/`.ignore`/fichiers cachés (pas
-/// des erreurs, un choix délibéré du moteur `ignore`) sont eux visibles en journalisant
-/// la façade `log` interne de cette crate vers `tracing` (voir `main::init_logging`,
-/// directive `ignore=debug` avec `--verbose`).
+/// dossiers cachés, sans dépendre de commandes système externes. Utilise le moteur
+/// **parallèle** de la crate `ignore` (`WalkParallel`, celui qui fait la vitesse de
+/// `rg`) plutôt que sa variante mono-thread, pour un parcours nettement plus rapide
+/// sur les grandes arborescences (`C:\`, `/`). `progress` est incrémentée d'une unité
+/// par entrée visitée (SPEC-T02) — passer `DotProgress::new_disabled()` pour un
+/// parcours silencieux (ex. en test). Chaque entrée visitée est journalisée au niveau
+/// `DEBUG` (visible uniquement via `--verbose`, SPEC-T04). Toute entrée qui ne peut
+/// pas être lue (permissions insuffisantes, chemin trop long — un cas classique sous
+/// Windows au-delà de `MAX_PATH` — boucle de symlinks...) est journalisée en `WARN`,
+/// toujours visible par défaut, plutôt que d'être silencieusement absente du parcours
+/// sans explication. Les répertoires volontairement élagués par les règles
+/// `.gitignore`/`.ignore`/fichiers cachés (pas des erreurs, un choix délibéré du
+/// moteur `ignore`) sont eux visibles en journalisant la façade `log` interne de
+/// cette crate vers `tracing` (voir `main::init_logging`, directive `ignore=debug`
+/// avec `--verbose`).
 pub fn walk<'a>(
     root: &Path,
     progress: &'a DotProgress,
     no_ignore: bool,
 ) -> impl Iterator<Item = DirEntry> + 'a {
-    WalkBuilder::new(root)
+    let walker = WalkBuilder::new(root)
         .git_ignore(!no_ignore)
         .ignore(!no_ignore)
         .parents(!no_ignore)
-        .build()
-        .filter_map(|entry| match entry {
-            Ok(entry) => Some(entry),
-            Err(err) => {
-                log_walk_error(err);
-                None
-            }
-        })
+        .build_parallel();
+
+    spawn_parallel_walk(walker)
+        .into_iter()
         .inspect(move |entry| {
             progress.inc();
             debug!(path = %entry.path().display(), "fichier analysé");
@@ -106,7 +144,7 @@ pub fn walk_including_hidden<'a>(
     no_ignore: bool,
     git_dirs: Arc<Mutex<Vec<PathBuf>>>,
 ) -> impl Iterator<Item = DirEntry> + 'a {
-    WalkBuilder::new(root)
+    let walker = WalkBuilder::new(root)
         .hidden(false)
         .git_ignore(!no_ignore)
         .ignore(!no_ignore)
@@ -120,14 +158,10 @@ pub fn walk_including_hidden<'a>(
             }
             false
         })
-        .build()
-        .filter_map(|entry| match entry {
-            Ok(entry) => Some(entry),
-            Err(err) => {
-                log_walk_error(err);
-                None
-            }
-        })
+        .build_parallel();
+
+    spawn_parallel_walk(walker)
+        .into_iter()
         .inspect(move |entry| {
             progress.inc();
             debug!(path = %entry.path().display(), "fichier analysé (dotfiles inclus)");
@@ -149,6 +183,27 @@ mod tests {
             .count();
         assert_eq!(found, 1);
         assert_eq!(progress.position(), 2); // le répertoire racine + package.json
+    }
+
+    #[test]
+    fn finds_every_file_at_scale_with_the_parallel_walker() {
+        let dir = tempfile::tempdir().unwrap();
+        const FILE_COUNT: usize = 300;
+        for i in 0..FILE_COUNT {
+            std::fs::write(dir.path().join(format!("file{i}.txt")), "x").unwrap();
+        }
+
+        let progress = DotProgress::new_disabled();
+        let found: std::collections::HashSet<_> = walk(dir.path(), &progress, false)
+            .filter(|entry| entry.file_type().is_some_and(|ft| ft.is_file()))
+            .map(|entry| entry.file_name().to_owned())
+            .collect();
+
+        // HashSet (pas juste un compte) : le canal mpsc derrière WalkParallel peut
+        // réordonner les entrées entre threads, mais chacune ne doit apparaître
+        // qu'une seule fois, sans perte ni doublon.
+        assert_eq!(found.len(), FILE_COUNT);
+        assert_eq!(progress.position(), FILE_COUNT as u64 + 1); // + le répertoire racine
     }
 
     #[test]

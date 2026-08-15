@@ -48,6 +48,13 @@ npm,@hubsync/web-sdk-react,6.3.7 | 6.3.8 | 6.3.9 | 6.3.10 | 6.3.11 | 6.3.12 | 6.
 ### SPEC-F02 - Moteur de recherche et de parcours de fichiers ultra-rapide
 Pour le parcours du système de fichiers, le binaire Rust doit s'affranchir des commandes système (`find`, `grep`, `rg`) afin de garantir une indépendance totale et des performances maximales, en particulier sur les systèmes de fichiers lents (ex. montages DrvFs / WSL `/mnt/c/`).
 *   **Crate Recommandé :** Utiliser la crate **`ignore`** (le moteur de parcours parallèle derrière ripgrep). Elle gère nativement le multi-threading, respecte les fichiers `.gitignore`, filtre les dossiers cachés et permet d'élaguer très rapidement les arborescences géantes de dépendances.
+*   **Moteur parallèle (`WalkParallel`) :** `walker.rs` utilise `WalkBuilder::build_parallel()` — le
+    moteur multi-thread de la crate, pas sa variante mono-thread (`build()`) — pour profiter
+    pleinement de la vitesse annoncée par `ignore` sur les grandes arborescences (`C:\`, `/`).
+    `WalkParallel::run` pilote elle-même un pool de threads mais expose une API à base de callback
+    par thread, pas un `Iterator` : un canal (`std::sync::mpsc`) fait le pont vers l'API `Iterator`
+    synchrone attendue par tous les appelants (`discovery`, `scan`, `workspace`, `audit`) — le
+    parcours tourne sur un thread dédié pendant que l'appelant consomme les entrées au fil de l'eau.
 *   **`--no-ignore` :** Flag CLI désactivant les règles `.gitignore`/`.ignore`/parent (mais pas
     le filtrage des dossiers cachés) pour la découverte de projets (SPEC-F03), l'audit des
     paquets déjà installés (SPEC-F04) et le scan passif (SPEC-F05/F08) — sans lui, un
