@@ -55,6 +55,13 @@ Pour le parcours du système de fichiers, le binaire Rust doit s'affranchir des 
     par thread, pas un `Iterator` : un canal (`std::sync::mpsc`) fait le pont vers l'API `Iterator`
     synchrone attendue par tous les appelants (`discovery`, `scan`, `workspace`, `audit`) — le
     parcours tourne sur un thread dédié pendant que l'appelant consomme les entrées au fil de l'eau.
+*   **`--walk-threads <N>` :** Flag CLI configurant le nombre de threads du `WalkParallel`
+    (`WalkBuilder::threads`, SPEC-T01). `0` (défaut) laisse la crate `ignore` détecter le
+    parallélisme disponible (plafonné à 12 en interne). Seuls les points d'entrée de production
+    (`workspace::walk_workspace`, `audit::audit_installed_packages`) exposent ce réglage ; les
+    parcours de test unitaire (`discovery::discover`, `scan::scan_workspace`, non utilisés en
+    production, voir ci-dessous) gardent une valeur `0` codée en dur pour ne pas élargir
+    inutilement leur surface d'API publique.
 *   **`--no-ignore` :** Flag CLI désactivant les règles `.gitignore`/`.ignore`/parent (mais pas
     le filtrage des dossiers cachés) pour la découverte de projets (SPEC-F03), l'audit des
     paquets déjà installés (SPEC-F04) et le scan passif (SPEC-F05/F08) — sans lui, un
@@ -284,6 +291,11 @@ SPEC-F06/F07 :
 *   **Runtime :** S'appuyer sur la crate **`tokio`** pour orchestrer le parallélisme.
 *   **Worker Pool :** Utiliser un pool de threads pour paralléliser l'analyse des différents répertoires de projets.
 *   **Limiteur de Concurrence (Sémaphore) :** Le lancement de processus lourds (`npm install`) doit être encadré par un sémaphore (`tokio::sync::Semaphore`) configurable (par exemple, 4 travailleurs max par défaut) pour éviter de saturer le disque ou les E/S du système, particulièrement sous WSL.
+*   **Deux dimensions de concurrence distinctes et indépendamment configurables :**
+    `--workers <N>` (défaut 4) borne le sémaphore ci-dessus (simulations `npm install`
+    concurrentes) ; `--walk-threads <N>` (défaut 0 = auto, SPEC-F02) borne le nombre de threads
+    du parcours de fichiers `WalkParallel`. Ne pas confondre les deux : l'un limite des
+    sous-processus externes lourds, l'autre le parallélisme interne d'un parcours en mémoire.
 
 ### SPEC-T02 - Indicateurs de progression et formats de sortie (CLI UX)
 *   **Indicateur texte dédié (`progress::DotProgress`) :** Le parcours de fichiers (SPEC-F02) et la

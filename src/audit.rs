@@ -82,8 +82,13 @@ struct InstalledPackageManifest {
 /// ou simuler un lockfile pour eux (amélioration de SPEC-F04, niveau 1). Parcourt
 /// `node_modules` à toute profondeur (contrairement au scan de hooks O(1) de
 /// SPEC-F06) afin de couvrir aussi les dépendances transitives non hissées
-/// (`node_modules` imbriqués suite à un conflit de version).
-pub fn audit_installed_packages(db: &IocDatabase, project: &Project) -> Vec<Finding> {
+/// (`node_modules` imbriqués suite à un conflit de version). `threads` fixe le nombre
+/// de threads du parcours (`--walk-threads`, `0` = auto).
+pub fn audit_installed_packages(
+    db: &IocDatabase,
+    project: &Project,
+    threads: usize,
+) -> Vec<Finding> {
     let node_modules = project.root.join("node_modules");
     if !node_modules.is_dir() {
         // Cas normal (pas une erreur) : le projet n'a simplement pas encore été
@@ -92,7 +97,7 @@ pub fn audit_installed_packages(db: &IocDatabase, project: &Project) -> Vec<Find
         return Vec::new();
     }
     let progress = DotProgress::new_disabled();
-    crate::walker::walk(&node_modules, &progress, true)
+    crate::walker::walk(&node_modules, &progress, true, threads)
         .filter(|entry| entry.file_name() == "package.json")
         .filter_map(|entry| {
             let content = std::fs::read_to_string(entry.path()).ok()?;
@@ -317,7 +322,7 @@ mod tests {
             has_yarn_lock: false,
         };
 
-        let findings = audit_installed_packages(&db, &project);
+        let findings = audit_installed_packages(&db, &project, 0);
         assert_eq!(findings.len(), 2);
         assert!(findings.iter().all(|f| f.project == project.root));
         assert!(findings
@@ -355,7 +360,7 @@ mod tests {
             has_yarn_lock: false,
         };
 
-        let findings = audit_installed_packages(&db, &project);
+        let findings = audit_installed_packages(&db, &project, 0);
         assert!(findings
             .iter()
             .any(|f| f.package == "evil-pkg"

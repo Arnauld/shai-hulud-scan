@@ -55,6 +55,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 4)]
     pub workers: usize,
 
+    /// Nombre de threads utilisés par le parcours de fichiers (`WalkParallel` de la
+    /// crate `ignore`, SPEC-F02) — découverte de projets, scan passif et audit
+    /// `node_modules`. `0` (défaut) laisse la crate détecter le parallélisme
+    /// disponible (plafonné à 12). Distinct de `--workers`, qui borne les simulations
+    /// `npm install` concurrentes (SPEC-T01), une autre dimension de concurrence.
+    #[arg(long, default_value_t = 0)]
+    pub walk_threads: usize,
+
     /// Délai maximal (secondes) accordé à chaque simulation `npm install` avant
     /// abandon (SPEC-F04). Une résolution réseau lente ou bloquée sur un seul projet
     /// ne doit jamais empêcher le reste du scan de se terminer.

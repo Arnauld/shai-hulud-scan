@@ -42,12 +42,14 @@ pub fn project_from_package_json(path: &Path) -> Option<Project> {
 
 /// Recherche récursivement tous les projets npm/yarn sous `root`. `progress` reflète
 /// l'avancement du parcours de fichiers sous-jacent (SPEC-T02). Effectue son propre
-/// parcours (conservée pour compatibilité/tests unitaires en isolation) — le chemin de
-/// production (`lib.rs::run`) passe par `workspace::walk_workspace`, qui appelle
-/// [`project_from_package_json`] pour chaque entrée d'un unique parcours partagé avec
-/// le scan passif (SPEC-F05/F08), plutôt que de parcourir le disque une seconde fois.
+/// parcours (conservée pour compatibilité/tests unitaires en isolation, threads
+/// toujours en auto-détection — pas exposée en configuration CLI comme
+/// `workspace::walk_workspace`) — le chemin de production (`lib.rs::run`) passe par
+/// `workspace::walk_workspace`, qui appelle [`project_from_package_json`] pour chaque
+/// entrée d'un unique parcours partagé avec le scan passif (SPEC-F05/F08), plutôt que
+/// de parcourir le disque une seconde fois.
 pub fn discover(root: &Path, progress: &DotProgress, no_ignore: bool) -> Vec<Project> {
-    let projects: Vec<Project> = crate::walker::walk(root, progress, no_ignore)
+    let projects: Vec<Project> = crate::walker::walk(root, progress, no_ignore, 0)
         .filter_map(|entry| project_from_package_json(entry.path()))
         .collect();
 

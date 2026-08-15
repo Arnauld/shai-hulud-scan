@@ -182,11 +182,12 @@ pub fn scan_file(path: &Path, config: &IocsConfig) -> Option<FileScanResult> {
 /// Scanne tous les fichiers du workspace, **dotfiles inclus** (hors extensions
 /// exclues, SPEC-F05 — l'inclusion des fichiers cachés est nécessaire pour voir les
 /// `.env*`, normalement élagués par le parcours standard, SPEC-F08). Effectue son
-/// propre parcours (conservée pour compatibilité/tests unitaires en isolation) — le
-/// chemin de production (`lib.rs::run`) passe par `workspace::walk_workspace`, qui
-/// appelle [`scan_file`] pour chaque entrée d'un unique parcours partagé avec la
-/// découverte de projets (SPEC-F02), plutôt que de parcourir le disque une seconde
-/// fois.
+/// propre parcours (conservée pour compatibilité/tests unitaires en isolation, threads
+/// toujours en auto-détection — pas exposée en configuration CLI comme
+/// `workspace::walk_workspace`) — le chemin de production (`lib.rs::run`) passe par
+/// `workspace::walk_workspace`, qui appelle [`scan_file`] pour chaque entrée d'un
+/// unique parcours partagé avec la découverte de projets (SPEC-F02), plutôt que de
+/// parcourir le disque une seconde fois.
 pub fn scan_workspace(
     workspace_root: &Path,
     no_ignore: bool,
@@ -198,7 +199,7 @@ pub fn scan_workspace(
 
     let git_dirs = Arc::new(Mutex::new(Vec::new()));
     for entry in
-        crate::walker::walk_including_hidden(workspace_root, &progress, no_ignore, git_dirs)
+        crate::walker::walk_including_hidden(workspace_root, &progress, no_ignore, git_dirs, 0)
     {
         let path = entry.path();
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {

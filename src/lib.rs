@@ -58,8 +58,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
 
     info!(path = %cli.path.display(), "lancement de l'analyse");
     let walk_progress = DotProgress::new(true, 10, 100);
-    let workspace =
-        workspace::walk_workspace(&cli.path, &walk_progress, cli.no_ignore, &iocs_config);
+    let workspace = workspace::walk_workspace(
+        &cli.path,
+        &walk_progress,
+        cli.no_ignore,
+        &iocs_config,
+        cli.walk_threads,
+    );
     walk_progress.finish();
     // Le compte de fichiers ("nombre de fichier à analyser", SPEC-T04) n'est connu
     // qu'une fois le parcours terminé : il est affiché à la suite des points de
@@ -80,7 +85,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<Report> {
         .iter()
         .flat_map(|project| {
             let mut project_findings = audit::audit_project(&db, project);
-            project_findings.extend(audit::audit_installed_packages(&db, project));
+            project_findings.extend(audit::audit_installed_packages(
+                &db,
+                project,
+                cli.walk_threads,
+            ));
             project_findings
         })
         .collect();

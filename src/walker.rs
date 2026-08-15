@@ -98,14 +98,16 @@ fn spawn_parallel_walk(walker: WalkParallel) -> mpsc::Receiver<DirEntry> {
 /// dossiers cachés, sans dépendre de commandes système externes. Utilise le moteur
 /// **parallèle** de la crate `ignore` (`WalkParallel`, celui qui fait la vitesse de
 /// `rg`) plutôt que sa variante mono-thread, pour un parcours nettement plus rapide
-/// sur les grandes arborescences (`C:\`, `/`). `progress` est incrémentée d'une unité
-/// par entrée visitée (SPEC-T02) — passer `DotProgress::new_disabled()` pour un
-/// parcours silencieux (ex. en test). Chaque entrée visitée est journalisée au niveau
-/// `DEBUG` (visible uniquement via `--verbose`, SPEC-T04). Toute entrée qui ne peut
-/// pas être lue (permissions insuffisantes, chemin trop long — un cas classique sous
-/// Windows au-delà de `MAX_PATH` — boucle de symlinks...) est journalisée en `WARN`,
-/// toujours visible par défaut, plutôt que d'être silencieusement absente du parcours
-/// sans explication. Les répertoires volontairement élagués par les règles
+/// sur les grandes arborescences (`C:\`, `/`). `threads` fixe le nombre de threads du
+/// parcours (`--walk-threads`, `0` = laisser la crate détecter le parallélisme
+/// disponible, plafonné à 12). `progress` est incrémentée d'une unité par entrée
+/// visitée (SPEC-T02) — passer `DotProgress::new_disabled()` pour un parcours
+/// silencieux (ex. en test). Chaque entrée visitée est journalisée au niveau `DEBUG`
+/// (visible uniquement via `--verbose`, SPEC-T04). Toute entrée qui ne peut pas être
+/// lue (permissions insuffisantes, chemin trop long — un cas classique sous Windows
+/// au-delà de `MAX_PATH` — boucle de symlinks...) est journalisée en `WARN`, toujours
+/// visible par défaut, plutôt que d'être silencieusement absente du parcours sans
+/// explication. Les répertoires volontairement élagués par les règles
 /// `.gitignore`/`.ignore`/fichiers cachés (pas des erreurs, un choix délibéré du
 /// moteur `ignore`) sont eux visibles en journalisant la façade `log` interne de
 /// cette crate vers `tracing` (voir `main::init_logging`, directive `ignore=debug`
@@ -114,11 +116,13 @@ pub fn walk<'a>(
     root: &Path,
     progress: &'a DotProgress,
     no_ignore: bool,
+    threads: usize,
 ) -> impl Iterator<Item = DirEntry> + 'a {
     let walker = WalkBuilder::new(root)
         .git_ignore(!no_ignore)
         .ignore(!no_ignore)
         .parents(!no_ignore)
+        .threads(threads)
         .build_parallel();
 
     spawn_parallel_walk(walker)
@@ -137,18 +141,21 @@ pub fn walk<'a>(
 /// Réservée aux vérifications qui doivent explicitement voir les dotfiles. `no_ignore`
 /// a la même signification que pour [`walk`] (`--no-ignore`, SPEC-F02) : désactive les
 /// règles `.gitignore`/`.ignore`/parent, pour ne pas manquer un sous-dépôt cloné
-/// volontairement ignoré.
+/// volontairement ignoré. `threads` a la même signification que pour [`walk`]
+/// (`--walk-threads`).
 pub fn walk_including_hidden<'a>(
     root: &Path,
     progress: &'a DotProgress,
     no_ignore: bool,
     git_dirs: Arc<Mutex<Vec<PathBuf>>>,
+    threads: usize,
 ) -> impl Iterator<Item = DirEntry> + 'a {
     let walker = WalkBuilder::new(root)
         .hidden(false)
         .git_ignore(!no_ignore)
         .ignore(!no_ignore)
         .parents(!no_ignore)
+        .threads(threads)
         .filter_entry(move |entry| {
             if entry.file_name() != ".git" {
                 return true;
@@ -178,7 +185,7 @@ mod tests {
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
 
         let progress = DotProgress::new_disabled();
-        let found = walk(dir.path(), &progress, false)
+        let found = walk(dir.path(), &progress, false, 0)
             .filter(|entry| entry.file_name() == "package.json")
             .count();
         assert_eq!(found, 1);
@@ -194,7 +201,7 @@ mod tests {
         }
 
         let progress = DotProgress::new_disabled();
-        let found: std::collections::HashSet<_> = walk(dir.path(), &progress, false)
+        let found: std::collections::HashSet<_> = walk(dir.path(), &progress, false, 0)
             .filter(|entry| entry.file_type().is_some_and(|ft| ft.is_file()))
             .map(|entry| entry.file_name().to_owned())
             .collect();
@@ -204,6 +211,23 @@ mod tests {
         // qu'une seule fois, sans perte ni doublon.
         assert_eq!(found.len(), FILE_COUNT);
         assert_eq!(progress.position(), FILE_COUNT as u64 + 1); // + le répertoire racine
+    }
+
+    #[test]
+    fn respects_an_explicit_thread_count() {
+        let dir = tempfile::tempdir().unwrap();
+        const FILE_COUNT: usize = 50;
+        for i in 0..FILE_COUNT {
+            std::fs::write(dir.path().join(format!("file{i}.txt")), "x").unwrap();
+        }
+
+        // threads=1 doit rester correct (même moteur WalkParallel, juste un seul
+        // thread worker) : ne doit ni perdre d'entrée, ni se bloquer.
+        let progress = DotProgress::new_disabled();
+        let found = walk(dir.path(), &progress, false, 1)
+            .filter(|entry| entry.file_type().is_some_and(|ft| ft.is_file()))
+            .count();
+        assert_eq!(found, FILE_COUNT);
     }
 
     #[test]

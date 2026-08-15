@@ -31,20 +31,28 @@ pub struct WorkspaceWalk {
 /// Parcourt `root` une seule fois (dotfiles inclus, SPEC-F08) pour la découverte de
 /// projets (SPEC-F03), le scan passif (SPEC-F05/F08) et le repérage des dépôts `.git`
 /// (SPEC-F08) — au lieu de trois parcours indépendants de la même arborescence.
+/// `threads` fixe le nombre de threads du parcours parallèle sous-jacent
+/// (`--walk-threads`, `0` = laisser la crate `ignore` détecter le parallélisme
+/// disponible, plafonné à 12).
 pub fn walk_workspace(
     root: &Path,
     progress: &DotProgress,
     no_ignore: bool,
     config: &IocsConfig,
+    threads: usize,
 ) -> WorkspaceWalk {
     let git_dirs = Arc::new(Mutex::new(Vec::new()));
     let mut projects = Vec::new();
     let mut threat_signals = Vec::new();
     let mut install_command_mentions = Vec::new();
 
-    for entry in
-        crate::walker::walk_including_hidden(root, progress, no_ignore, Arc::clone(&git_dirs))
-    {
+    for entry in crate::walker::walk_including_hidden(
+        root,
+        progress,
+        no_ignore,
+        Arc::clone(&git_dirs),
+        threads,
+    ) {
         let path = entry.path();
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
@@ -105,7 +113,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = walk_workspace(dir.path(), &DotProgress::new_disabled(), false, &config);
+        let result = walk_workspace(dir.path(), &DotProgress::new_disabled(), false, &config, 0);
 
         assert_eq!(result.projects.len(), 1);
         assert!(result.projects[0].has_npm_lock);
@@ -129,7 +137,7 @@ mod tests {
         std::fs::create_dir_all(git_dir.join("objects")).unwrap();
         std::fs::write(git_dir.join("objects").join("pack"), "webhook.site").unwrap();
 
-        let result = walk_workspace(dir.path(), &DotProgress::new_disabled(), false, &config);
+        let result = walk_workspace(dir.path(), &DotProgress::new_disabled(), false, &config, 0);
 
         assert_eq!(result.git_dirs, vec![git_dir]);
         assert!(result.threat_signals.is_empty());
@@ -141,7 +149,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("README.md"), "hello").unwrap();
 
-        let result = walk_workspace(dir.path(), &DotProgress::new_disabled(), false, &config);
+        let result = walk_workspace(dir.path(), &DotProgress::new_disabled(), false, &config, 0);
         assert!(result.git_dirs.is_empty());
     }
 }
