@@ -16,13 +16,14 @@ Toutes les specs fonctionnelles (SPEC-F01 à F07) et techniques (SPEC-T01 à T03
 - `workspace` — parcours **unique** du workspace (`walk_workspace`) combinant découverte de projets, scan passif et repérage des dépôts `.git` (SPEC-F02/F03/F05/F08), au lieu de trois parcours indépendants — chemin utilisé par `lib.rs::run`.
 - `discovery` — détection des projets npm/yarn (SPEC-F03) ; `discover()` fait son propre parcours, gardée pour les tests unitaires en isolation (plus utilisée en production, voir `workspace` ci-dessus).
 - `audit` — analyse des lockfiles existants + simulation `npm install --package-lock-only` (SPEC-F04).
-- `scan` — détection passive de commandes d'install dans le code source via `regex` (SPEC-F05) ; `scan_workspace()` idem `discover()` (tests uniquement).
+- `scan` — détection passive de commandes d'install dans le code source via `regex` (SPEC-F05) ; `scan_workspace()` idem `discover()` (tests uniquement). Nuance la sévérité d'une correspondance trouvée dans un contexte bénin via trois mécanismes : commentaire (`comments.rs`, lexer JS/TS/Python), appel `console.log`/`console.error` (`console_scan.rs`, JS/TSX uniquement), ou fichier `.md` entier.
+- `console_scan` — détection des appels `console.log`/`console.error` en JS/TSX via un vrai parseur AST (`oxc_parser`), utilisée par `scan` pour nuancer la sévérité d'une correspondance juste affichée/journalisée (SPEC-F05).
 - `hunt` — recherche active de signaux malveillants sur disque (fichiers payload, hooks, persistance macOS/CI) (SPEC-F06/F07).
 - `report` — sortie console ANSI, `--report-file`, `--json` (SPEC-T02).
 - `cli` — point d'entrée, orchestration `tokio` + sémaphore de concurrence (SPEC-T01).
 
 ## Crates de référence imposées par la spec
-`tokio` (async/parallélisme), `ignore` (parcours fichiers, moteur ripgrep), `regex`, `console` (ANSI), `clap` (CLI, derive), `serde`/`serde_json`/`csv`/`toml` (JSON, parsing IOC, `iocs.toml`), `reqwest` (rustls, téléchargement IOC), `anyhow`/`thiserror` (erreurs), `dirs` (chemins `~/Library/LaunchAgents`), `chrono` (horodatage UTC de l'en-tête de rapport, feature `clock` uniquement). Pas de dépendance externe pour les indicateurs de progression (`progress::DotProgress`, texte simple — `indicatif` a été retiré, son rendu ne fonctionnant pas correctement sur certains terminaux Windows).
+`tokio` (async/parallélisme), `ignore` (parcours fichiers, moteur ripgrep), `regex`, `console` (ANSI), `clap` (CLI, derive), `serde`/`serde_json`/`csv`/`toml` (JSON, parsing IOC, `iocs.toml`), `reqwest` (rustls, téléchargement IOC), `anyhow`/`thiserror` (erreurs), `dirs` (chemins `~/Library/LaunchAgents`), `chrono` (horodatage UTC de l'en-tête de rapport, feature `clock` uniquement), `oxc_parser`/`oxc_ast`/`oxc_ast_visit`/`oxc_allocator`/`oxc_span` (parseur AST JS/TSX, module `console_scan`, SPEC-F05). Pas de dépendance externe pour les indicateurs de progression (`progress::DotProgress`, texte simple — `indicatif` a été retiré, son rendu ne fonctionnant pas correctement sur certains terminaux Windows).
 
 ## Commandes
 ```bash

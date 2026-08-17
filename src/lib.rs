@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod cli;
 pub mod comments;
+pub mod console_scan;
 pub mod discovery;
 pub mod hunt;
 pub mod ioc;

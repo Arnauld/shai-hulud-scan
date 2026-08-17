@@ -54,6 +54,16 @@ pub enum ThreatCategory {
     /// rapport à la catégorie d'origine — signal probablement bénin (exemple,
     /// documentation, liste d'IOC citée pour référence...).
     CommandFoundInComment,
+    /// Correspondance sensible trouvée à l'intérieur d'un appel `console.log`/
+    /// `console.error` en JS/TSX (SPEC-F05, AST via `oxc_parser`, module
+    /// `console_scan`) : juste affichée/journalisée, jamais exécutée comme commande —
+    /// sévérité abaissée au même titre que [`Self::CommandFoundInComment`].
+    CommandFoundInLogStatement,
+    /// Correspondance sensible trouvée dans un fichier `.md` (SPEC-F05) : un README
+    /// documentant une installation ou citant un marqueur C2 pour référence n'est pas
+    /// du code exécuté — sévérité abaissée au même titre que
+    /// [`Self::CommandFoundInComment`].
+    CommandFoundInDocumentation,
 }
 
 /// Un signal de compromission détecté sur le disque.

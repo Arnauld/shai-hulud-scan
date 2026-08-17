@@ -9,7 +9,7 @@ use console::style;
 use serde::Serialize;
 
 use crate::audit::Finding;
-use crate::hunt::{InstallScript, ThreatSignal};
+use crate::hunt::{InstallScript, ThreatCategory, ThreatSignal};
 use crate::ioc::CompromiseStatus;
 
 const REPORT_NOT_COMPROMISED: bool = false;
@@ -234,6 +234,19 @@ impl Report {
         }
 
         for threat in &self.threats {
+            // Catégories déjà volontairement abaissées en sévérité (commentaire,
+            // console.log/error, fichier .md, SPEC-F05/F08) : signal probablement
+            // bénin, affiché uniquement au niveau `Debug` du rapport, comme le reste
+            // du contenu verbeux (SPEC-T05).
+            let is_low_severity = matches!(
+                threat.category,
+                ThreatCategory::CommandFoundInComment
+                    | ThreatCategory::CommandFoundInLogStatement
+                    | ThreatCategory::CommandFoundInDocumentation
+            );
+            if is_low_severity && level < ReportLevel::Debug {
+                continue;
+            }
             out.push_str(&format!(
                 "{} {:?} : {} ({})\n",
                 style("[MENACE]").yellow().bold(),
@@ -492,5 +505,46 @@ mod tests {
         let debug_text = report.render_text(ReportLevel::Debug);
         assert!(debug_text.contains("README.md"));
         assert!(debug_text.contains("[INFO]"));
+    }
+
+    #[test]
+    fn downgraded_threat_categories_are_shown_only_at_debug_level() {
+        for category in [
+            ThreatCategory::CommandFoundInComment,
+            ThreatCategory::CommandFoundInLogStatement,
+            ThreatCategory::CommandFoundInDocumentation,
+        ] {
+            let threats = vec![crate::hunt::ThreatSignal {
+                category,
+                path: PathBuf::from("/proj/app.js"),
+                detail: "npm-cache.com".to_string(),
+            }];
+            let report = Report::from_findings(&[]).with_threats(threats);
+
+            let error_text = report.render_text(ReportLevel::Error);
+            assert!(
+                !error_text.contains("[MENACE]"),
+                "{category:?} should be hidden at Error level"
+            );
+
+            let debug_text = report.render_text(ReportLevel::Debug);
+            assert!(
+                debug_text.contains("[MENACE]"),
+                "{category:?} should be shown at Debug level"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_threat_categories_are_always_shown_regardless_of_level() {
+        let threats = vec![crate::hunt::ThreatSignal {
+            category: ThreatCategory::KnownC2Marker,
+            path: PathBuf::from("/proj/app.js"),
+            detail: "npm-cache.com".to_string(),
+        }];
+        let report = Report::from_findings(&[]).with_threats(threats);
+
+        let error_text = report.render_text(ReportLevel::Error);
+        assert!(error_text.contains("[MENACE]"));
     }
 }

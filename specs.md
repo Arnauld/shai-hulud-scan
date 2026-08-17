@@ -182,18 +182,34 @@ d'installation directes.
     (chaîne trouvée dans un commentaire, un exemple, ou la propre liste d'IOC d'un outil de
     sécurité) est désormais traité par un lexer de commentaires minimal (`comments.rs` : suit les
     chaînes `'...'`/`"..."`/`` `...` `` pour ne jamais confondre un `//` à l'intérieur d'une URL
-    avec un commentaire, et les délimiteurs `//`, `/* */`, `#` eux-mêmes). Une correspondance
-    (marqueur C2 SPEC-F08, mention npm/yarn install) trouvée **uniquement** à l'intérieur d'un
-    commentaire :
-    *   pour un marqueur C2 : reste un `ThreatSignal`, mais catégorisé
-        `CommandFoundInComment` plutôt que `KnownC2Marker` — sévérité volontairement abaissée,
-        toujours visible dans le rapport (transparence, SPEC-T05) mais distinguable d'une
-        correspondance en code réellement exécuté.
-    *   pour une mention npm/yarn install : n'est pas reportée du tout (déjà la sévérité la plus
-        basse — simple indice contextuel, Debug uniquement — sans palier plus bas à modéliser).
+    avec un commentaire, et les délimiteurs `//`, `/* */`, `#` eux-mêmes).
     *   Les docstrings Python triple-guillemetées ne sont volontairement **pas** traitées comme
         des commentaires (distinction docstring/chaîne de donnée hors de portée d'un lexer sans
         contexte syntaxique) ; seuls les commentaires `#` classiques bénéficient de la nuance.
+*   **Nuance par appel `console.log`/`console.error` (JS/TSX uniquement) :** un vrai parseur AST
+    (crate **`oxc_parser`**, module `console_scan.rs`) détecte une correspondance trouvée
+    **uniquement** à l'intérieur des arguments d'un appel `console.log(...)`/`console.error(...)`
+    — juste affichée/journalisée, jamais exécutée comme commande. Portée volontairement limitée
+    aux extensions `.js` et `.tsx` (pas `.jsx`/`.ts`/`.mjs`/`.cjs`, qui restent couverts par le
+    lexer de commentaires ci-dessus mais pas par cette nuance AST). Un fichier qui ne parse pas
+    comme du JS/TSX valide ne fait pas échouer le scan (aucune correspondance marquée comme
+    "dans un console.log", comportement conservateur identique à une extension non couverte).
+*   **Nuance pour les fichiers `.md` :** tout le fichier est considéré comme un contexte de
+    documentation — un README documentant une installation ou citant un marqueur C2 pour
+    référence n'est pas plus suspect qu'un commentaire de code. S'applique à l'ensemble du
+    fichier, pas seulement à une portion (contrairement aux deux mécanismes ci-dessus qui
+    opèrent sur des intervalles).
+*   **Conséquence sur la sévérité :** une correspondance (marqueur C2 SPEC-F08, mention npm/yarn
+    install) dont **toutes** les occurrences relèvent d'un des trois contextes bénins ci-dessus :
+    *   pour un marqueur C2 : reste un `ThreatSignal`, mais catégorisé `CommandFoundInComment`,
+        `CommandFoundInLogStatement` ou `CommandFoundInDocumentation` (selon le mécanisme)
+        plutôt que `KnownC2Marker` — sévérité volontairement abaissée, affichée uniquement au
+        niveau `Debug` du rapport (SPEC-T05), comme le reste du contenu verbeux, plutôt que
+        toujours visible comme un `KnownC2Marker` ordinaire.
+    *   pour une mention npm/yarn install : n'est pas reportée du tout (déjà la sévérité la plus
+        basse — simple indice contextuel, Debug uniquement — sans palier plus bas à modéliser).
+    Une seule occurrence en dehors de ces trois contextes suffit à garder la sévérité normale,
+    même si d'autres occurrences de la même correspondance sont bénignes.
 
 ### SPEC-F06 - Recherche active de signaux malveillants (Threat Hunting / Forensics)
 L'outil doit intégrer des fonctionnalités de détection de menaces actives sur la machine de l'utilisateur :
